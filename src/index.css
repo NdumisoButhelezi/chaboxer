@@ -8,14 +8,11 @@ html {
   -webkit-text-size-adjust: 100%;
 }
 
-meta[name="viewport"] {
-  content: "width=device-width, initial-scale=1.0, viewport-fit=cover";
-}
-
 body {
   margin: 0;
   background: #fff;
   min-height: 100vh;
+  overscroll-behavior: none;
 }
 
 #root {
