@@ -5,7 +5,7 @@ const config: CapacitorConfig = {
   appName: 'chaboxer',
   webDir: 'dist',
   android: {
-    backgroundColor: '#ffffff'
+    backgroundColor: '#0f172a'
   },
   ios: {
     contentInset: 'automatic'

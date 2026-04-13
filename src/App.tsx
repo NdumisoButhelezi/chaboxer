@@ -1,12 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { getAllNotes, putNote, deleteNoteDB, type Note } from './db'
 import './App.css'
-
-interface Note {
-  id: number
-  title: string
-  body: string
-  date: string
-}
 
 function App() {
   const [notes, setNotes] = useState<Note[]>([])
@@ -16,6 +10,13 @@ function App() {
   const [mobileView, setMobileView] = useState<'list' | 'editor'>('list')
 
   const activeNote = notes.find((n) => n.id === activeId)
+
+  // Load notes from IndexedDB on mount
+  useEffect(() => {
+    getAllNotes().then((saved) => {
+      setNotes(saved)
+    })
+  }, [])
 
   const addNote = () => {
     const now = new Date()
@@ -30,6 +31,7 @@ function App() {
     setTitle(newNote.title)
     setBody(newNote.body)
     setMobileView('editor')
+    putNote(newNote)
   }
 
   const selectNote = (note: Note) => {
@@ -45,20 +47,24 @@ function App() {
     setMobileView('list')
   }
 
-  const save = () => {
+  const save = useCallback(() => {
     if (activeId === null) return
+    const updated: Note = {
+      id: activeId,
+      title: title || 'Untitled',
+      body,
+      date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+    }
     setNotes((prev) =>
-      prev.map((n) =>
-        n.id === activeId
-          ? { ...n, title: title || 'Untitled', body, date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) }
-          : n
-      )
+      prev.map((n) => (n.id === activeId ? updated : n))
     )
-  }
+    putNote(updated)
+  }, [activeId, title, body])
 
   const deleteNote = (id: number) => {
     const updated = notes.filter((n) => n.id !== id)
     setNotes(updated)
+    deleteNoteDB(id)
     if (activeId === id) {
       const next = updated[0] || null
       setActiveId(next?.id ?? null)
@@ -92,7 +98,7 @@ function App() {
         <div className="notes-list">
           {notes.length === 0 && (
             <div className="empty-hint">
-              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#ccc" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                 <polyline points="14 2 14 8 20 8" />
                 <line x1="16" y1="13" x2="8" y2="13" />
@@ -167,7 +173,7 @@ function App() {
           </>
         ) : (
           <div className="editor-empty">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ddd" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#334155" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
               <polyline points="14 2 14 8 20 8" />
             </svg>
