@@ -13,6 +13,7 @@ function App() {
   const [activeId, setActiveId] = useState<number | null>(null)
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
+  const [mobileView, setMobileView] = useState<'list' | 'editor'>('list')
 
   const activeNote = notes.find((n) => n.id === activeId)
 
@@ -28,6 +29,7 @@ function App() {
     setActiveId(newNote.id)
     setTitle(newNote.title)
     setBody(newNote.body)
+    setMobileView('editor')
   }
 
   const selectNote = (note: Note) => {
@@ -35,6 +37,12 @@ function App() {
     setActiveId(note.id)
     setTitle(note.title)
     setBody(note.body)
+    setMobileView('editor')
+  }
+
+  const goBack = () => {
+    save()
+    setMobileView('list')
   }
 
   const save = () => {
@@ -62,7 +70,7 @@ function App() {
   return (
     <div className="app">
       {/* Sidebar */}
-      <aside className="sidebar">
+      <aside className={`sidebar ${mobileView === 'list' ? 'mobile-show' : 'mobile-hide'}`}>
         <div className="sidebar-header">
           <h1>Notes</h1>
           <button className="add-btn" onClick={addNote} title="New note">+</button>
@@ -95,9 +103,10 @@ function App() {
       </aside>
 
       {/* Editor */}
-      <main className="editor">
+      <main className={`editor ${mobileView === 'editor' ? 'mobile-show' : 'mobile-hide'}`}>
         {activeNote ? (
           <>
+            <button className="back-btn" onClick={goBack}>← Notes</button>
             <input
               className="editor-title"
               value={title}
