@@ -36,6 +36,8 @@ export interface Note {
   folderId: number | null
   createdAt: string // ISO timestamp
   updatedAt: string // ISO timestamp
+  pinned?: boolean
+  deletedAt?: string | null // set = in trash
 }
 
 export interface Folder {

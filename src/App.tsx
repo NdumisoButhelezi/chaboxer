@@ -9,6 +9,7 @@ import {
 import type { AIActions } from './ai'
 import type { User } from 'firebase/auth'
 import { renderMarkdown } from './markdown'
+import GraphView from './GraphView'
 import './App.css'
 
 interface BeforeInstallPromptEvent extends Event {
@@ -42,6 +43,17 @@ function App() {
   const [preview, setPreview] = useState(false)
   const [renamingFolder, setRenamingFolder] = useState<number | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [showGraph, setShowGraph] = useState(false)
+  const [showHelp, setShowHelp] = useState(false)
+  const [showTrash, setShowTrash] = useState(false)
+  const [showTemplates, setShowTemplates] = useState(false)
+  const [showExport, setShowExport] = useState(false)
+  const [slashMenu, setSlashMenu] = useState<{ pos: number } | null>(null)
+  const [lightTheme, setLightTheme] = useState(false)
+  const [fontSize, setFontSize] = useState<'s' | 'm' | 'l'>('m')
+  const [recording, setRecording] = useState(false)
+  const [tagBusy, setTagBusy] = useState(false)
+  const recognitionRef = useRef<{ stop(): void } | null>(null)
   const [mobileView, setMobileView] = useState<'list' | 'editor'>('list')
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
   const bodyRef = useRef<HTMLTextAreaElement>(null)
@@ -83,10 +95,122 @@ function App() {
   }
 
   useEffect(() => {
-    getAllNotes().then(setNotes)
-    getAllFolders().then(setFolders)
+    getAllNotes().then((saved) => {
+      // Purge trash older than 30 days
+      const cutoff = Date.now() - 30 * 24 * 3600 * 1000
+      const expired = saved.filter((n) => n.deletedAt && new Date(n.deletedAt).getTime() < cutoff)
+      expired.forEach((n) => deleteNoteDB(n.id))
+      setNotes(saved.filter((n) => !expired.includes(n)))
+      // First run: seed tutorial notes that demo folders, markdown, links, tags & graph
+      getSetting('tutorial-seeded').then((done) => {
+        if (done || saved.length > 0) return
+        putSetting('tutorial-seeded', '1')
+        const now = new Date().toISOString()
+        const folder: Folder = { id: Date.now() - 10, name: 'Getting Started', createdAt: now }
+        putFolder(folder)
+        setFolders((prev) => [...prev, folder])
+        const seeded: Note[] = [
+          {
+            id: Date.now(),
+            title: 'Welcome to Chaboxer',
+            body: [
+              '# Welcome! \u{1F44B}',
+              '',
+              'This is your **markdown notepad** with folders, AI, cloud sync and a graph view. Here\u2019s the tour \u2014 open these notes too: [[Markdown Cheatsheet]] and [[Power Features]].',
+              '',
+              '## The basics',
+              '- Click **New page** to create a note \u2014 it saves automatically',
+              '- Click **New folder**, then **drag notes into folders** to organise',
+              '- Double-click a folder name to rename it',
+              '- Use the **search box** to find anything by title or content',
+              '- Hit **Preview** in the toolbar to render your markdown beautifully',
+              '',
+              '## Try this right now',
+              '- [ ] Toggle **Preview** on this note',
+              '- [ ] Click the [[Markdown Cheatsheet]] link in preview',
+              '- [ ] Open **Graph view** in the sidebar to see these notes connected',
+              '- [ ] Sign in with Google to sync notes to your other devices',
+              '',
+              '#tutorial',
+            ].join('\n'),
+            date: today(), folderId: folder.id, createdAt: now, updatedAt: now,
+          },
+          {
+            id: Date.now() + 1,
+            title: 'Markdown Cheatsheet',
+            body: [
+              '# Markdown Cheatsheet',
+              '',
+              '**bold** \u2192 `**bold**` \u00b7 *italic* \u2192 `*italic*` \u00b7 ~~strike~~ \u2192 `~~strike~~` \u00b7 ==highlight== \u2192 `==highlight==`',
+              '',
+              '## Headings',
+              'Start a line with `#`, `##`, `###`...',
+              '',
+              '## Lists',
+              '- Bullet: start with `-`',
+              '1. Numbered: start with `1.`',
+              '- [ ] Task: `- [ ]` (Enter continues the list automatically!)',
+              '- [x] Done task: `- [x]`',
+              '',
+              '## More',
+              '> Quote: start with `>`',
+              '',
+              '```',
+              'Code block: wrap in triple backticks',
+              '```',
+              '',
+              'Link notes with `[[Note Title]]` \u2192 [[Welcome to Chaboxer]]',
+              'Tag anything with `#hashtags` \u2192 they become hubs in Graph view',
+              '',
+              '## Keyboard shortcuts',
+              '- **Ctrl+B** bold \u00b7 **Ctrl+I** italic \u00b7 **Ctrl+E** code \u00b7 **Ctrl+S** save',
+              '',
+              '#tutorial',
+            ].join('\n'),
+            date: today(), folderId: folder.id, createdAt: now, updatedAt: now,
+          },
+          {
+            id: Date.now() + 2,
+            title: 'Power Features',
+            body: [
+              '# Power Features \u26A1',
+              '',
+              '## \u2726 AI Assistant',
+              'Open it with the **\u2726 AI** button in the toolbar. It can read all your notes and:',
+              '- "Summarize my notes from this week"',
+              '- "Create a note with a meal plan in a folder called Health"',
+              '- "Clean up and reformat the open note"',
+              '',
+              '## \u{1F578} Graph view',
+              'Click **Graph view** in the sidebar. Notes are blue, #tags are green hubs, folders are yellow hubs. Drag nodes, scroll to zoom, click a note to open it.',
+              '',
+              '## \u2601 Cloud sync',
+              'Sign in with Google and your notes follow you to any phone or computer \u2014 in realtime.',
+              '',
+              '## \u{1F4F1} Install as an app',
+              'Use the **Install App** button (when offered by your browser) to add Chaboxer to your home screen.',
+              '',
+              '#tutorial #power-user',
+            ].join('\n'),
+            date: today(), folderId: folder.id, createdAt: now, updatedAt: now,
+          },
+        ]
+        seeded.forEach((n) => putNote(n))
+        setNotes((prev) => [...seeded, ...prev])
+      })
+    })
+    getAllFolders().then((f) => setFolders((prev) => [...prev, ...f.filter((x) => !prev.some((p) => p.id === x.id))]))
     getChatHistory().then(setChatMessages)
-    getSetting('openai-api-key').then((k) => { if (k) setApiKey(k) })
+    // Env-configured backend takes priority; fall back to the locally saved key
+    const envKey = (import.meta.env.VITE_OPENAI_API_KEY as string | undefined) || ''
+    const envBase = (import.meta.env.VITE_OPENAI_BASE_URL as string | undefined) || ''
+    if (envKey || envBase) {
+      setApiKey(envKey || 'backend-configured')
+    } else {
+      getSetting('openai-api-key').then((k) => { if (k) setApiKey(k) })
+    }
+    getSetting('theme').then((t) => { if (t === 'light') setLightTheme(true) })
+    getSetting('font-size').then((f) => { if (f === 's' || f === 'l') setFontSize(f) })
   }, [])
 
   // Firebase auth + realtime sync
@@ -135,10 +259,10 @@ function App() {
   const today = () =>
     new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 
-  const addNote = (folderId: number | null = null) => {
+  const addNote = (folderId: number | null = null, noteTitle = 'Untitled', noteBody = '') => {
     const now = new Date().toISOString()
     const newNote: Note = {
-      id: Date.now(), title: 'Untitled', body: '', date: today(),
+      id: Date.now(), title: noteTitle, body: noteBody, date: today(),
       folderId, createdAt: now, updatedAt: now,
     }
     setNotes((prev) => [newNote, ...prev])
@@ -146,16 +270,45 @@ function App() {
     setTitle(newNote.title)
     setBody(newNote.body)
     setPreview(false)
+    setShowGraph(false)
     setMobileView('editor')
     putNote(newNote)
   }
 
+  // Templates
+  const TEMPLATES: { name: string; icon: string; title: () => string; body: () => string }[] = [
+    {
+      name: 'Daily journal', icon: '\u{1F4C6}',
+      title: () => `Journal — ${today()}`,
+      body: () => `# ${today()}\n\n## How I feel\n\n\n## What happened today\n- \n\n## Grateful for\n1. \n\n## Tomorrow\n- [ ] \n\n#journal`,
+    },
+    {
+      name: 'Meeting notes', icon: '\u{1F91D}',
+      title: () => `Meeting — ${today()}`,
+      body: () => `# Meeting — ${today()}\n\n**Attendees:** \n**Agenda:** \n\n## Notes\n- \n\n## Decisions\n- \n\n## Action items\n- [ ] \n\n#meeting`,
+    },
+    {
+      name: 'To-do list', icon: '\u2705',
+      title: () => `To-do — ${today()}`,
+      body: () => `# To-do\n\n## Today\n- [ ] \n\n## This week\n- [ ] \n\n## Someday\n- [ ] \n\n#todo`,
+    },
+  ]
+
+  const dailyKey = () => new Date().toISOString().slice(0, 10)
+
+  // Open (or create) today's daily note
+  const openDailyNote = () => {
+    const existing = notesRef.current.find((n) => n.title === dailyKey() && !n.deletedAt)
+    if (existing) selectNote(existing)
+    else addNote(null, dailyKey(), `# ${today()}\n\n`)
+  }
+
   const addFolder = () => {
-    const name = window.prompt('Folder name')
-    if (!name?.trim()) return
-    const folder: Folder = { id: Date.now(), name: name.trim() }
-    setFolders((prev) => [...prev, folder].sort((a, b) => a.name.localeCompare(b.name)))
+    const folder: Folder = { id: Date.now(), name: 'New Folder', createdAt: new Date().toISOString() }
+    setFolders((prev) => [...prev, folder])
     putFolder(folder)
+    setRenamingFolder(folder.id)
+    setRenameValue(folder.name)
   }
 
   const renameFolder = (id: number) => {
@@ -211,7 +364,34 @@ function App() {
     setTitle(note.title)
     setBody(note.body)
     setPreview(false)
+    setShowGraph(false)
     setMobileView('editor')
+  }
+
+  const openNoteById = (id: number) => {
+    const note = notesRef.current.find((n) => n.id === id)
+    if (note) selectNote(note)
+  }
+
+  // Clicking a [[wikilink]] in preview opens (or creates) that note
+  const handlePreviewClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const el = (e.target as HTMLElement).closest('.wikilink')
+    if (!el) return
+    const name = el.textContent?.trim()
+    if (!name) return
+    const existing = notesRef.current.find((n) => n.title.toLowerCase() === name.toLowerCase())
+    if (existing) {
+      selectNote(existing)
+    } else {
+      const now = new Date().toISOString()
+      const note: Note = {
+        id: Date.now(), title: name, body: '', date: today(),
+        folderId: null, createdAt: now, updatedAt: now,
+      }
+      setNotes((prev) => [note, ...prev])
+      putNote(note)
+      selectNote(note)
+    }
   }
 
   const goBack = () => {
@@ -238,14 +418,213 @@ function App() {
   }, [activeId, title, body])
 
   const deleteNote = (id: number) => {
-    const updated = notes.filter((n) => n.id !== id)
-    setNotes(updated)
-    deleteNoteDB(id)
+    // Soft-delete: move to trash for 30 days
+    setNotes((prev) =>
+      prev.map((n) => {
+        if (n.id === id) {
+          const trashed = { ...n, deletedAt: new Date().toISOString() }
+          putNote(trashed)
+          return trashed
+        }
+        return n
+      })
+    )
     if (activeId === id) {
-      const next = updated[0] || null
-      setActiveId(next?.id ?? null)
-      setTitle(next?.title ?? '')
-      setBody(next?.body ?? '')
+      setActiveId(null)
+      setTitle('')
+      setBody('')
+    }
+  }
+
+  const restoreNote = (id: number) => {
+    setNotes((prev) =>
+      prev.map((n) => {
+        if (n.id === id) {
+          const restored = { ...n, deletedAt: null }
+          putNote(restored)
+          return restored
+        }
+        return n
+      })
+    )
+  }
+
+  const deleteForever = (id: number) => {
+    if (!window.confirm('Delete permanently? This cannot be undone.')) return
+    setNotes((prev) => prev.filter((n) => n.id !== id))
+    deleteNoteDB(id)
+  }
+
+  const togglePin = (id: number) => {
+    setNotes((prev) =>
+      prev.map((n) => {
+        if (n.id === id) {
+          const updated = { ...n, pinned: !n.pinned }
+          putNote(updated)
+          return updated
+        }
+        return n
+      })
+    )
+  }
+
+  // Export
+  const download = (filename: string, content: string, type = 'text/markdown') => {
+    const url = URL.createObjectURL(new Blob([content], { type }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const exportNote = () => {
+    if (!activeNote) return
+    download(`${activeNote.title.replace(/[\\/:*?"<>|]/g, '-')}.md`, `# ${activeNote.title}\n\n${body}`)
+  }
+
+  const safeName = () => (activeNote?.title ?? 'note').replace(/[\\/:*?"<>|]/g, '-')
+
+  // Full HTML document of the rendered note (used by PDF and Word exports)
+  const noteAsHtml = () => `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${activeNote?.title ?? ''}</title>
+<style>
+body{font-family:Georgia,'Times New Roman',serif;max-width:720px;margin:40px auto;padding:0 24px;color:#1a1a2e;line-height:1.7}
+h1,h2,h3{color:#0f172a;line-height:1.3}
+code{background:#f1f5f9;border-radius:4px;padding:1px 5px;font-family:Consolas,monospace;font-size:0.9em}
+pre{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;overflow-x:auto}
+blockquote{border-left:3px solid #64748b;margin:0.6em 0;padding:2px 0 2px 14px;color:#475569}
+mark{background:#fef08a}
+.tag{color:#059669}
+.wikilink{color:#7c3aed;border-bottom:1px dashed #7c3aed}
+.meta{color:#94a3b8;font-size:13px;margin-bottom:24px}
+li.task{list-style:none;margin-left:-20px}
+</style></head><body>
+<h1>${activeNote?.title ?? ''}</h1>
+<div class="meta">Created ${activeNote ? fmtDate(activeNote.createdAt) : ''} · Updated ${activeNote ? fmtDate(activeNote.updatedAt) : ''}</div>
+${renderMarkdown(body)}
+</body></html>`
+
+  // PDF via the browser's print-to-PDF dialog
+  const exportPdf = () => {
+    if (!activeNote) return
+    const win = window.open('', '_blank')
+    if (!win) { window.alert('Pop-up blocked — allow pop-ups to export PDF.'); return }
+    win.document.write(noteAsHtml())
+    win.document.close()
+    win.focus()
+    setTimeout(() => win.print(), 300)
+  }
+
+  // Word opens HTML saved with a .doc extension natively
+  const exportWord = () => {
+    if (!activeNote) return
+    download(`${safeName()}.doc`, noteAsHtml(), 'application/msword')
+  }
+
+  // LLM-ready prompt: note + context, copied to clipboard
+  const exportPrompt = async (scope: 'note' | 'vault') => {
+    const header = [
+      'You are my assistant. Below are my personal notes exported from my notepad app.',
+      'Read them carefully, then help me with whatever I ask next — you may summarize,',
+      'answer questions, find connections, or continue writing in the same style and language.',
+      'Treat [[double brackets]] as links between notes and #words as topic tags.',
+      '',
+      '=== NOTES START ===',
+    ].join('\n')
+    let content: string
+    if (scope === 'note' && activeNote) {
+      content = `## ${activeNote.title}\n(created ${fmtDate(activeNote.createdAt)}, updated ${fmtDate(activeNote.updatedAt)})\n\n${body}`
+    } else {
+      content = notesRef.current
+        .filter((n) => !n.deletedAt)
+        .map((n) => {
+          const folder = foldersRef.current.find((f) => f.id === n.folderId)
+          return `## ${n.title}\n(folder: ${folder?.name ?? 'none'} · created ${fmtDate(n.createdAt)} · updated ${fmtDate(n.updatedAt)})\n\n${n.body}`
+        })
+        .join('\n\n---\n\n')
+    }
+    const prompt = `${header}\n\n${content}\n\n=== NOTES END ===\n\nMy first request: `
+    try {
+      await navigator.clipboard.writeText(prompt)
+      window.alert(`Prompt copied to clipboard (${prompt.length.toLocaleString()} characters). Paste it into ChatGPT, Claude, Gemini or any LLM.`)
+    } catch {
+      download(`${scope === 'note' ? safeName() : 'chaboxer-vault'}-prompt.txt`, prompt, 'text/plain')
+    }
+  }
+
+  const exportVault = () => {
+    const live = notesRef.current.filter((n) => !n.deletedAt)
+    const md = live
+      .map((n) => {
+        const folder = foldersRef.current.find((f) => f.id === n.folderId)
+        return `---\ntitle: ${n.title}\nfolder: ${folder?.name ?? ''}\ncreated: ${n.createdAt}\nupdated: ${n.updatedAt}\n---\n\n# ${n.title}\n\n${n.body}`
+      })
+      .join('\n\n\n')
+    download(`chaboxer-vault-${dailyKey()}.md`, md)
+  }
+
+  const copyNote = async () => {
+    await navigator.clipboard.writeText(body)
+  }
+
+  // Theme & font size
+  const toggleTheme = () => {
+    const next = !lightTheme
+    setLightTheme(next)
+    putSetting('theme', next ? 'light' : 'dark')
+  }
+
+  const cycleFontSize = () => {
+    const next = fontSize === 's' ? 'm' : fontSize === 'm' ? 'l' : 's'
+    setFontSize(next)
+    putSetting('font-size', next)
+  }
+
+  // Voice dictation (Web Speech API)
+  const toggleVoice = () => {
+    if (recording) {
+      recognitionRef.current?.stop()
+      setRecording(false)
+      return
+    }
+    const w = window as unknown as { SpeechRecognition?: new () => unknown; webkitSpeechRecognition?: new () => unknown }
+    const Ctor = w.SpeechRecognition || w.webkitSpeechRecognition
+    if (!Ctor) {
+      window.alert('Voice input is not supported in this browser. Try Chrome or Android.')
+      return
+    }
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const rec = new (Ctor as any)()
+    rec.continuous = true
+    rec.interimResults = false
+    rec.onresult = (e: any) => {
+      let transcript = ''
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) transcript += e.results[i][0].transcript
+      }
+      if (transcript) setBody((prev) => (prev ? `${prev} ${transcript.trim()}` : transcript.trim()))
+    }
+    rec.onend = () => setRecording(false)
+    rec.onerror = () => setRecording(false)
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+    recognitionRef.current = rec
+    rec.start()
+    setRecording(true)
+  }
+
+  // AI auto-tagging
+  const autoTag = async () => {
+    if (!activeNote || !apiKey || tagBusy) return
+    setTagBusy(true)
+    try {
+      const { suggestTags } = await import('./ai')
+      const titles = notesRef.current.filter((n) => !n.deletedAt && n.id !== activeId).map((n) => n.title)
+      const line = await suggestTags(apiKey, { ...activeNote, body }, titles)
+      if (line) setBody((prev) => `${prev.trimEnd()}\n\n${line}\n`)
+    } catch (err) {
+      window.alert(`Auto-tag failed: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setTagBusy(false)
     }
   }
 
@@ -272,12 +651,22 @@ function App() {
   }
 
   const handleBodyKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashMenu && (e.key === 'Escape' || e.key === 'Backspace')) setSlashMenu(null)
     if (e.ctrlKey || e.metaKey) {
       if (e.key === 'b') { e.preventDefault(); applyFormat('**') }
       else if (e.key === 'i') { e.preventDefault(); applyFormat('*') }
       else if (e.key === 'e') { e.preventDefault(); applyFormat('`') }
       else if (e.key === 's') { e.preventDefault(); save() }
       return
+    }
+    // Slash command menu at the start of a line
+    if (e.key === '/') {
+      const ta = e.currentTarget
+      const s = ta.selectionStart
+      const lineStart = body.lastIndexOf('\n', s - 1) + 1
+      if (body.slice(lineStart, s).trim() === '') {
+        setSlashMenu({ pos: s })
+      }
     }
     // Continue lists on Enter
     if (e.key === 'Enter') {
@@ -302,11 +691,53 @@ function App() {
     }
   }
 
+  // Slash command insertions (replaces the typed '/')
+  const SLASH_COMMANDS: { label: string; icon: string; insert: () => string }[] = [
+    { label: 'Heading 1', icon: 'H1', insert: () => '# ' },
+    { label: 'Heading 2', icon: 'H2', insert: () => '## ' },
+    { label: 'Bullet list', icon: '\u2022', insert: () => '- ' },
+    { label: 'Numbered list', icon: '1.', insert: () => '1. ' },
+    { label: 'Task', icon: '\u2611', insert: () => '- [ ] ' },
+    { label: 'Quote', icon: '\u201C', insert: () => '> ' },
+    { label: 'Code block', icon: '{}', insert: () => '```\n\n```' },
+    { label: 'Divider', icon: '\u2014', insert: () => '---\n' },
+    { label: 'Date stamp', icon: '\u{1F4C5}', insert: () => `**${today()}** ` },
+    { label: 'Time stamp', icon: '\u23F0', insert: () => `**${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}** ` },
+    { label: 'Wikilink', icon: '[[', insert: () => '[[]]' },
+    { label: 'Table', icon: '\u2637', insert: () => '| Column | Column |\n| --- | --- |\n|  |  |\n' },
+  ]
+
+  const runSlashCommand = (cmd: { insert: () => string }) => {
+    if (!slashMenu) return
+    const text = cmd.insert()
+    // Remove the '/' that opened the menu
+    const next = body.slice(0, slashMenu.pos) + text + body.slice(slashMenu.pos + 1)
+    setBody(next)
+    setSlashMenu(null)
+    requestAnimationFrame(() => {
+      const ta = bodyRef.current
+      if (!ta) return
+      ta.focus()
+      const cursor = slashMenu.pos + (text.includes('[[]]') ? text.indexOf('[[]]') + 2 : text.length)
+      ta.setSelectionRange(cursor, cursor)
+    })
+  }
+
   const q = search.trim().toLowerCase()
-  const visibleNotes = q
-    ? notes.filter((n) => n.title.toLowerCase().includes(q) || n.body.toLowerCase().includes(q))
-    : notes
+  const liveNotes = notes.filter((n) => !n.deletedAt)
+  const trashedNotes = notes.filter((n) => n.deletedAt)
+  const searched = q
+    ? liveNotes.filter((n) => n.title.toLowerCase().includes(q) || n.body.toLowerCase().includes(q))
+    : liveNotes
+  const visibleNotes = [...searched].sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false) || b.id - a.id)
   const rootNotes = visibleNotes.filter((n) => n.folderId === null)
+
+  // Backlinks: live notes whose body wikilinks to the open note's title
+  const backlinks = activeNote
+    ? liveNotes.filter(
+        (n) => n.id !== activeNote.id && n.body.toLowerCase().includes(`[[${activeNote.title.toLowerCase()}]]`)
+      )
+    : []
 
   const wordCount = body.trim() ? body.trim().split(/\s+/).length : 0
 
@@ -396,7 +827,7 @@ function App() {
     try {
       const { runAI } = await import('./ai')
       const reply = await runAI(
-        apiKey, text, chatMessages, notesRef.current, activeId, aiActions
+        apiKey, text, chatMessages, notesRef.current.filter((n) => !n.deletedAt), activeId, aiActions
       )
       const aiMsg: ChatMessage = {
         id: Date.now() + 1, role: 'assistant', content: reply, createdAt: new Date().toISOString(),
@@ -429,7 +860,7 @@ function App() {
       draggable
       onDragStart={(ev) => ev.dataTransfer.setData('text/note-id', String(note.id))}
     >
-      <div className="note-item-icon"><FileIcon /></div>
+      <div className="note-item-icon">{note.pinned ? <span className="pin-glyph">{'\u{1F4CC}'}</span> : <FileIcon />}</div>
       <div className="note-item-info">
         <span className="note-item-title">{note.title}</span>
         <span className="note-item-meta">
@@ -437,9 +868,19 @@ function App() {
         </span>
       </div>
       <button
+        className={`pin-btn ${note.pinned ? 'pinned' : ''}`}
+        onClick={(e) => { e.stopPropagation(); togglePin(note.id) }}
+        title={note.pinned ? 'Unpin' : 'Pin to top'}
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill={note.pinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 17v5" />
+          <path d="M9 10.76V7a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3.76a2 2 0 0 0 .59 1.42l1.82 1.82H5.59l1.82-1.82A2 2 0 0 0 9 10.76z" />
+        </svg>
+      </button>
+      <button
         className="delete-btn"
         onClick={(e) => { e.stopPropagation(); deleteNote(note.id) }}
-        title="Delete"
+        title="Move to trash"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="3 6 5 6 21 6" />
@@ -450,7 +891,7 @@ function App() {
   )
 
   return (
-    <div className="app">
+    <div className={`app ${lightTheme ? 'light' : ''} font-${fontSize}`}>
       {/* Sidebar */}
       <aside className={`sidebar ${mobileView === 'list' ? 'mobile-show' : 'mobile-hide'}`}>
         <div className="sidebar-header">
@@ -492,6 +933,35 @@ function App() {
             </svg>
             New page
           </button>
+          <button className="new-page-btn" onClick={openDailyNote}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="4" width="18" height="18" rx="2" />
+              <line x1="16" y1="2" x2="16" y2="6" />
+              <line x1="8" y1="2" x2="8" y2="6" />
+              <line x1="3" y1="10" x2="21" y2="10" />
+            </svg>
+            Today's note
+          </button>
+          <div className="template-wrap">
+            <button className="new-page-btn" onClick={() => setShowTemplates(!showTemplates)}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="7" height="7" rx="1" />
+                <rect x="14" y="3" width="7" height="7" rx="1" />
+                <rect x="3" y="14" width="7" height="7" rx="1" />
+                <rect x="14" y="14" width="7" height="7" rx="1" />
+              </svg>
+              Templates
+            </button>
+            {showTemplates && (
+              <div className="template-menu">
+                {TEMPLATES.map((t) => (
+                  <button key={t.name} onClick={() => { setShowTemplates(false); addNote(null, t.title(), t.body()) }}>
+                    <span>{t.icon}</span> {t.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <button className="new-page-btn" onClick={addFolder}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
@@ -500,6 +970,36 @@ function App() {
             </svg>
             New folder
           </button>
+          <button className={`new-page-btn ${showGraph ? 'active-view' : ''}`} onClick={() => { save(); setShowGraph(!showGraph); setMobileView('editor') }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="5" cy="6" r="2.5" />
+              <circle cx="19" cy="6" r="2.5" />
+              <circle cx="12" cy="18" r="2.5" />
+              <line x1="7" y1="7.5" x2="10.5" y2="16" />
+              <line x1="17" y1="7.5" x2="13.5" y2="16" />
+              <line x1="7.5" y1="6" x2="16.5" y2="6" />
+            </svg>
+            Graph view
+          </button>
+          <button className="new-page-btn" onClick={() => setShowHelp(true)}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            Help &amp; tips
+          </button>
+          <div className="settings-row">
+            <button className="setting-chip" onClick={toggleTheme} title="Toggle light/dark theme">
+              {lightTheme ? '\u{1F319} Dark' : '\u2600 Light'}
+            </button>
+            <button className="setting-chip" onClick={cycleFontSize} title="Cycle font size">
+              A{fontSize === 's' ? '\u2212' : fontSize === 'l' ? '+' : ''}
+            </button>
+            <button className="setting-chip" onClick={exportVault} title="Export all notes as one markdown file">
+              {'\u2B07'} Vault
+            </button>
+          </div>
           {installPrompt && (
             <button className="install-btn" onClick={handleInstall}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -622,12 +1122,64 @@ function App() {
           >
             {rootNotes.map(renderNoteItem)}
           </div>
+          {trashedNotes.length > 0 && (
+            <div className="trash-section">
+              <div className="folder-row" onClick={() => setShowTrash(!showTrash)}>
+                <span className={`chevron ${showTrash ? 'open' : ''}`}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                </span>
+                <span className="folder-icon trash-icon">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="3 6 5 6 21 6" />
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                  </svg>
+                </span>
+                <span className="folder-name">Trash</span>
+                <span className="folder-count">{trashedNotes.length}</span>
+              </div>
+              {showTrash && trashedNotes.map((note) => (
+                <div key={note.id} className="note-item trashed">
+                  <div className="note-item-info">
+                    <span className="note-item-title">{note.title}</span>
+                    <span className="note-item-meta">deleted {fmtDate(note.deletedAt!)} &middot; auto-purges in 30 days</span>
+                  </div>
+                  <button className="folder-action" title="Restore" onClick={() => restoreNote(note.id)}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="1 4 1 10 7 10" />
+                      <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+                    </svg>
+                  </button>
+                  <button className="folder-action delete" title="Delete forever" onClick={() => deleteForever(note.id)}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </aside>
 
       {/* Editor */}
       <main className={`editor ${mobileView === 'editor' ? 'mobile-show' : 'mobile-hide'}`}>
-        {activeNote ? (
+        {showGraph ? (
+          <>
+            <div className="editor-topbar">
+              <button className="back-btn" onClick={() => { setShowGraph(false); setMobileView('list') }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="15 18 9 12 15 6" />
+                </svg>
+                Notes
+              </button>
+              <span className="graph-title">Graph &middot; {notes.length} notes</span>
+            </div>
+            <GraphView notes={liveNotes} folders={folders} activeId={activeId} onOpenNote={openNoteById} />
+          </>
+        ) : activeNote ? (
           <>
             <div className="editor-topbar">
               <button className="back-btn" onClick={goBack}>
@@ -649,6 +1201,31 @@ function App() {
                 <button title="Task" onClick={() => applyFormat('- [ ] ', '', true)}>&#9745;</button>
                 <button title="Quote" onClick={() => applyFormat('> ', '', true)}>&#8220;</button>
                 <button title="Code block" onClick={() => applyFormat('```\n', '\n```')}>{'{ }'}</button>
+                <span className="toolbar-sep" />
+                <button
+                  title={recording ? 'Stop dictation' : 'Voice dictation'}
+                  className={recording ? 'active rec' : ''}
+                  onClick={toggleVoice}
+                >
+                  {recording ? '\u23F9' : '\u{1F399}'}
+                </button>
+                <button title="AI: suggest #tags and [[links]]" className="ai-btn" onClick={autoTag} disabled={tagBusy || !apiKey}>
+                  {tagBusy ? '\u2026' : '#\u2726'}
+                </button>
+                <div className="export-wrap">
+                  <button title="Export" className={showExport ? 'active' : ''} onClick={() => setShowExport(!showExport)}>{'\u2B07'}</button>
+                  {showExport && (
+                    <div className="export-menu">
+                      <button onClick={() => { setShowExport(false); exportNote() }}>{'\u{1F4C4}'} Markdown (.md)</button>
+                      <button onClick={() => { setShowExport(false); exportPdf() }}>{'\u{1F4D5}'} PDF (print)</button>
+                      <button onClick={() => { setShowExport(false); exportWord() }}>{'\u{1F4D8}'} Word (.doc)</button>
+                      <button onClick={() => { setShowExport(false); copyNote() }}>{'\u29C9'} Copy text</button>
+                      <div className="export-sep" />
+                      <button onClick={() => { setShowExport(false); exportPrompt('note') }}>{'\u2726'} LLM prompt (this note)</button>
+                      <button onClick={() => { setShowExport(false); exportPrompt('vault') }}>{'\u2726'} LLM prompt (all notes)</button>
+                    </div>
+                  )}
+                </div>
                 <span className="toolbar-sep" />
                 <button
                   title={preview ? 'Edit' : 'Preview'}
@@ -680,18 +1257,40 @@ function App() {
               {preview ? (
                 <div
                   className="editor-preview"
+                  onClick={handlePreviewClick}
                   dangerouslySetInnerHTML={{ __html: renderMarkdown(body) }}
                 />
               ) : (
-                <textarea
-                  ref={bodyRef}
-                  className="editor-body"
-                  value={body}
-                  onChange={(e) => setBody(e.target.value)}
-                  onKeyDown={handleBodyKeyDown}
-                  onBlur={save}
-                  placeholder="Write in markdown... **bold**, *italic*, # headings, - lists, [[links]], #tags"
-                />
+                <div className="editor-body-wrap">
+                  <textarea
+                    ref={bodyRef}
+                    className="editor-body"
+                    value={body}
+                    onChange={(e) => setBody(e.target.value)}
+                    onKeyDown={handleBodyKeyDown}
+                    onBlur={save}
+                    placeholder="Write in markdown... type / for commands"
+                  />
+                  {slashMenu && (
+                    <div className="slash-menu">
+                      {SLASH_COMMANDS.map((cmd) => (
+                        <button key={cmd.label} onMouseDown={(e) => { e.preventDefault(); runSlashCommand(cmd) }}>
+                          <span className="slash-icon">{cmd.icon}</span> {cmd.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {backlinks.length > 0 && (
+                <div className="backlinks">
+                  <div className="backlinks-title">Linked from</div>
+                  {backlinks.map((n) => (
+                    <button key={n.id} className="backlink" onClick={() => selectNote(n)}>
+                      {'\u{1F517}'} {n.title}
+                    </button>
+                  ))}
+                </div>
               )}
               <div className="editor-statusbar">
                 {wordCount} words &middot; {body.length} characters
@@ -776,6 +1375,44 @@ function App() {
             </>
           )}
         </aside>
+      )}
+
+      {/* Help modal */}
+      {showHelp && (
+        <div className="help-overlay" onClick={() => setShowHelp(false)}>
+          <div className="help-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="help-header">
+              <span>Quick guide</span>
+              <button className="ai-panel-action" onClick={() => setShowHelp(false)}>&#x2715;</button>
+            </div>
+            <div className="help-body">
+              <section>
+                <h4>&#x1F4DD; Writing</h4>
+                <p>Everything is <strong>markdown</strong>: <code># heading</code>, <code>**bold**</code>, <code>- list</code>, <code>- [ ] task</code>, <code>&gt; quote</code>, <code>==highlight==</code>. Hit <strong>Preview</strong> to render. Lists auto-continue on Enter.</p>
+              </section>
+              <section>
+                <h4>&#x2328; Shortcuts</h4>
+                <p><kbd>Ctrl+B</kbd> bold &middot; <kbd>Ctrl+I</kbd> italic &middot; <kbd>Ctrl+E</kbd> code &middot; <kbd>Ctrl+S</kbd> save</p>
+              </section>
+              <section>
+                <h4>&#x1F4C1; Organising</h4>
+                <p><strong>Drag notes into folders</strong>. Double-click a folder to rename. Use <code>#tags</code> anywhere and <code>[[Note Title]]</code> to link notes &mdash; clicking a link in preview opens (or creates) that note.</p>
+              </section>
+              <section>
+                <h4>&#x1F578; Graph view</h4>
+                <p>See connections between notes, tags and folders. Drag nodes, scroll to zoom, click a note to open it.</p>
+              </section>
+              <section>
+                <h4>&#x2726; AI assistant</h4>
+                <p>It reads your notes and can write them too: ask it to summarize your week, draft a note into a folder, or clean up the open note.</p>
+              </section>
+              <section>
+                <h4>&#x2601; Sync &amp; install</h4>
+                <p>Sign in with Google to sync across devices in realtime. Use <strong>Install App</strong> to add it to your home screen &mdash; works offline.</p>
+              </section>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

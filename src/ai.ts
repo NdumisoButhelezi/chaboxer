@@ -12,6 +12,21 @@ export interface AIActions {
   openNote(noteId: number): boolean
 }
 
+// LLM backend config — env wins over the key passed from the UI.
+// Base URL lets you target any OpenAI-compatible server (Azure, Ollama, vLLM, OpenRouter...).
+export const envApiKey = (import.meta.env.VITE_OPENAI_API_KEY as string | undefined) || ''
+const envModel = (import.meta.env.VITE_OPENAI_MODEL as string | undefined) || 'gpt-4o-mini'
+const envBaseURL = (import.meta.env.VITE_OPENAI_BASE_URL as string | undefined) || undefined
+
+export function createLLM(apiKey: string) {
+  return new ChatOpenAI({
+    apiKey: envApiKey || apiKey || 'not-needed', // local backends often ignore the key
+    model: envModel,
+    temperature: 0.4,
+    ...(envBaseURL ? { configuration: { baseURL: envBaseURL } } : {}),
+  })
+}
+
 const TOOLS = [
   {
     type: 'function' as const,
@@ -104,6 +119,22 @@ ${index || '(no notes yet)'}
 ${active ? `FULL CONTENT OF CURRENTLY OPEN NOTE (id:${active.id}, "${active.title}"):\n${active.body || '(empty)'}` : ''}`
 }
 
+// Ask the LLM for tags and wikilinks for one note
+export async function suggestTags(
+  apiKey: string,
+  note: Note,
+  allTitles: string[],
+): Promise<string> {
+  const model = createLLM(apiKey)
+  const res = await model.invoke([
+    new SystemMessage(
+      `You tag markdown notes. Reply with ONE line only: 2-5 relevant #tags (lowercase, hyphenated) and, if any of these existing note titles are strongly related, [[wikilinks]] to them: ${allTitles.join(', ')}. No explanations.`
+    ),
+    new HumanMessage(`Title: ${note.title}\n\n${note.body.slice(0, 4000)}`),
+  ])
+  return (typeof res.content === 'string' ? res.content : '').trim()
+}
+
 export async function runAI(
   apiKey: string,
   userInput: string,
@@ -112,11 +143,7 @@ export async function runAI(
   activeId: number | null,
   actions: AIActions,
 ): Promise<string> {
-  const model = new ChatOpenAI({
-    apiKey,
-    model: 'gpt-4o-mini',
-    temperature: 0.4,
-  }).bindTools(TOOLS)
+  const model = createLLM(apiKey).bindTools(TOOLS)
 
   // Memory: replay persisted chat history (last 30 messages) for context
   const messages: BaseMessage[] = [new SystemMessage(buildSystemPrompt(notes, activeId))]
