@@ -15,3 +15,13 @@ if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js')
   })
 }
+
+// A failed dynamic import means the page is from an older deploy — reload once to fetch the new build
+window.addEventListener('vite:preloadError', () => {
+  const key = 'chunk-reload'
+  if (!sessionStorage.getItem(key)) {
+    sessionStorage.setItem(key, '1')
+    window.location.reload()
+  }
+})
+window.addEventListener('load', () => sessionStorage.removeItem('chunk-reload'))

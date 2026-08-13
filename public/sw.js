@@ -1,4 +1,4 @@
-const CACHE_NAME = 'chaboxer-v1';
+const CACHE_NAME = 'chaboxer-v2';
 const ASSETS = [
   '/',
   '/index.html',
