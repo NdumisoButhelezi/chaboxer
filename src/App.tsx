@@ -567,6 +567,22 @@ ${renderMarkdown(body)}
     await navigator.clipboard.writeText(body)
   }
 
+  // Force-refresh: clear caches + service worker so the newest deploy loads
+  const hardRefresh = async () => {
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations()
+        await Promise.all(regs.map((r) => r.unregister()))
+      }
+      if ('caches' in window) {
+        const keys = await caches.keys()
+        await Promise.all(keys.map((k) => caches.delete(k)))
+      }
+    } finally {
+      window.location.reload()
+    }
+  }
+
   // Theme & font size
   const toggleTheme = () => {
     const next = !lightTheme
@@ -903,27 +919,6 @@ ${renderMarkdown(body)}
             <span>My Notes</span>
             {syncing && <span className="sync-badge">syncing&hellip;</span>}
           </div>
-          {cloudReady && (
-            user ? (
-              <div className="account-row">
-                {user.photoURL
-                  ? <img className="account-avatar" src={user.photoURL} alt="" referrerPolicy="no-referrer" />
-                  : <span className="account-avatar fallback">{(user.displayName ?? '?').charAt(0)}</span>}
-                <span className="account-name">{user.displayName ?? user.email}</span>
-                <button className="account-signout" onClick={handleSignOut}>Sign out</button>
-              </div>
-            ) : (
-              <button className="google-btn" onClick={handleSignIn}>
-                <svg width="14" height="14" viewBox="0 0 24 24">
-                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z" />
-                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23z" />
-                  <path fill="#FBBC05" d="M5.84 14.1a6.6 6.6 0 0 1 0-4.2V7.06H2.18a11 11 0 0 0 0 9.88l3.66-2.84z" />
-                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15A11 11 0 0 0 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
-                </svg>
-                Sign in with Google
-              </button>
-            )
-          )}
         </div>
         <div className="sidebar-actions">
           <button className="new-page-btn" onClick={() => addNote()}>
@@ -998,6 +993,9 @@ ${renderMarkdown(body)}
             </button>
             <button className="setting-chip" onClick={exportVault} title="Export all notes as one markdown file">
               {'\u2B07'} Vault
+            </button>
+            <button className="setting-chip" onClick={hardRefresh} title="Reload the app and fetch the latest version">
+              {'\u27F3'} Refresh
             </button>
           </div>
           {installPrompt && (
@@ -1160,6 +1158,34 @@ ${renderMarkdown(body)}
                 </div>
               ))}
             </div>
+          )}
+        </div>
+        <div className="sidebar-footer">
+          {cloudReady ? (
+            user ? (
+              <div className="account-row">
+                {user.photoURL
+                  ? <img className="account-avatar" src={user.photoURL} alt="" referrerPolicy="no-referrer" />
+                  : <span className="account-avatar fallback">{(user.displayName ?? '?').charAt(0)}</span>}
+                <div className="account-info">
+                  <span className="account-name">{user.displayName ?? user.email}</span>
+                  <span className="account-status"><i className="status-dot" /> Signed in &middot; syncing</span>
+                </div>
+                <button className="account-signout" onClick={handleSignOut}>Sign out</button>
+              </div>
+            ) : (
+              <button className="google-btn" onClick={handleSignIn}>
+                <svg width="14" height="14" viewBox="0 0 24 24">
+                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z" />
+                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23z" />
+                  <path fill="#FBBC05" d="M5.84 14.1a6.6 6.6 0 0 1 0-4.2V7.06H2.18a11 11 0 0 0 0 9.88l3.66-2.84z" />
+                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15A11 11 0 0 0 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+                </svg>
+                Sign in with Google
+              </button>
+            )
+          ) : (
+            <span className="account-status offline">Local only &middot; not synced</span>
           )}
         </div>
       </aside>
