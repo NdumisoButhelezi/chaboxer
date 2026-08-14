@@ -12,6 +12,16 @@ export interface AIActions {
   openNote(noteId: number): boolean
 }
 
+// Human-in-the-loop: a proposed edit awaiting user approval
+export interface PendingAction {
+  tool: 'create_note' | 'append_to_note' | 'replace_note_body'
+  title: string   // short human-readable description
+  preview: string // markdown content that would be written
+}
+
+// Return true to apply the action, false to reject it
+export type ApprovalGate = (action: PendingAction) => Promise<boolean>
+
 // LLM backend config — env wins over the key passed from the UI.
 // Base URL lets you target any OpenAI-compatible server (Azure, Ollama, vLLM, OpenRouter...).
 export const envApiKey = (import.meta.env.VITE_OPENAI_API_KEY as string | undefined) || ''
@@ -142,6 +152,7 @@ export async function runAI(
   notes: Note[],
   activeId: number | null,
   actions: AIActions,
+  requestApproval?: ApprovalGate, // undefined = agent mode (auto-apply)
 ): Promise<string> {
   const model = createLLM(apiKey).bindTools(TOOLS)
 
@@ -168,6 +179,23 @@ export async function runAI(
       let result = 'ok'
       try {
         const args = call.args as Record<string, unknown>
+
+        // Human-in-the-loop gate for mutating tools
+        if (requestApproval && (call.name === 'create_note' || call.name === 'append_to_note' || call.name === 'replace_note_body')) {
+          const target = notes.find((n) => n.id === Number(args.noteId))
+          const pending: PendingAction =
+            call.name === 'create_note'
+              ? { tool: call.name, title: `Create note "${String(args.title ?? 'Untitled')}"${args.folderName ? ` in folder "${args.folderName}"` : ''}`, preview: String(args.body ?? '') }
+              : call.name === 'append_to_note'
+                ? { tool: call.name, title: `Append to "${target?.title ?? `note ${args.noteId}`}"`, preview: String(args.text ?? '') }
+                : { tool: call.name, title: `Rewrite "${target?.title ?? `note ${args.noteId}`}"`, preview: String(args.body ?? '') }
+          const approved = await requestApproval(pending)
+          if (!approved) {
+            messages.push(new ToolMessage({ content: 'The user REJECTED this edit. Do not retry it; ask what they would like instead.', tool_call_id: call.id ?? '' }))
+            continue
+          }
+        }
+
         switch (call.name) {
           case 'create_note': {
             const id = actions.createNote(

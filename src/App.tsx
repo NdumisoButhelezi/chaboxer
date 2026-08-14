@@ -6,7 +6,7 @@ import {
   getSetting, putSetting,
   type Note, type Folder, type ChatMessage,
 } from './db'
-import type { AIActions } from './ai'
+import type { AIActions, PendingAction } from './ai'
 import type { User } from 'firebase/auth'
 import { renderMarkdown } from './markdown'
 import GraphView from './GraphView'
@@ -63,6 +63,11 @@ function App() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatInput, setChatInput] = useState('')
   const [aiBusy, setAiBusy] = useState(false)
+  // Agent mode: true = auto-apply AI edits, false = review each edit (human in the loop)
+  const [agentMode, setAgentMode] = useState(false)
+  const agentModeRef = useRef(agentMode)
+  agentModeRef.current = agentMode
+  const [pendingAction, setPendingAction] = useState<{ action: PendingAction; resolve: (ok: boolean) => void } | null>(null)
   const [apiKey, setApiKey] = useState('')
   const [keyInput, setKeyInput] = useState('')
   const chatEndRef = useRef<HTMLDivElement>(null)
@@ -211,6 +216,7 @@ function App() {
     }
     getSetting('theme').then((t) => { if (t === 'light') setLightTheme(true) })
     getSetting('font-size').then((f) => { if (f === 's' || f === 'l') setFontSize(f) })
+    getSetting('ai-agent-mode').then((v) => { if (v === 'on') setAgentMode(true) })
   }, [])
 
   // Firebase auth + realtime sync
@@ -254,7 +260,7 @@ function App() {
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [chatMessages, aiBusy])
+  }, [chatMessages, aiBusy, pendingAction])
 
   const today = () =>
     new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
@@ -830,6 +836,24 @@ ${renderMarkdown(body)}
     setKeyInput('')
   }
 
+  const toggleAgentMode = () => {
+    setAgentMode((prev) => {
+      putSetting('ai-agent-mode', prev ? 'off' : 'on')
+      return !prev
+    })
+  }
+
+  // Human-in-the-loop gate: resolves when the user approves/rejects in the chat UI
+  const requestApproval = (action: PendingAction): Promise<boolean> => {
+    if (agentModeRef.current) return Promise.resolve(true)
+    return new Promise<boolean>((resolve) => setPendingAction({ action, resolve }))
+  }
+
+  const resolvePending = (ok: boolean) => {
+    pendingAction?.resolve(ok)
+    setPendingAction(null)
+  }
+
   const sendChat = async () => {
     const text = chatInput.trim()
     if (!text || aiBusy || !apiKey) return
@@ -843,7 +867,8 @@ ${renderMarkdown(body)}
     try {
       const { runAI } = await import('./ai')
       const reply = await runAI(
-        apiKey, text, chatMessages, notesRef.current.filter((n) => !n.deletedAt), activeId, aiActions
+        apiKey, text, chatMessages, notesRef.current.filter((n) => !n.deletedAt), activeId, aiActions,
+        requestApproval,
       )
       const aiMsg: ChatMessage = {
         id: Date.now() + 1, role: 'assistant', content: reply, createdAt: new Date().toISOString(),
@@ -1340,6 +1365,13 @@ ${renderMarkdown(body)}
         <aside className="ai-panel">
           <div className="ai-panel-header">
             <span className="ai-panel-title">✦ Chaboxer AI</span>
+            <button
+              className={`ai-panel-action ai-mode-toggle ${agentMode ? 'agent' : ''}`}
+              title={agentMode ? 'Agent mode: edits apply automatically. Click to review each edit.' : 'Review mode: you approve each edit. Click for agent mode (auto-apply).'}
+              onClick={toggleAgentMode}
+            >
+              {agentMode ? '⚡ Agent' : '🛡 Review'}
+            </button>
             <button className="ai-panel-action" title="Clear memory" onClick={clearChat}>Clear</button>
             <button className="ai-panel-action" title="Close" onClick={() => setChatOpen(false)}>✕</button>
           </div>
@@ -1380,7 +1412,17 @@ ${renderMarkdown(body)}
                       : <div className="ai-msg-body">{m.content}</div>}
                   </div>
                 ))}
-                {aiBusy && <div className="ai-msg assistant"><div className="ai-msg-body typing">Thinking&hellip;</div></div>}
+                {pendingAction && (
+                  <div className="ai-approval">
+                    <div className="ai-approval-title">✋ AI wants to: {pendingAction.action.title}</div>
+                    <div className="ai-approval-preview md" dangerouslySetInnerHTML={{ __html: renderMarkdown(pendingAction.action.preview) }} />
+                    <div className="ai-approval-actions">
+                      <button className="ai-approve-btn" onClick={() => resolvePending(true)}>✓ Apply</button>
+                      <button className="ai-reject-btn" onClick={() => resolvePending(false)}>✕ Reject</button>
+                    </div>
+                  </div>
+                )}
+                {aiBusy && !pendingAction && <div className="ai-msg assistant"><div className="ai-msg-body typing">Thinking&hellip;</div></div>}
                 <div ref={chatEndRef} />
               </div>
               <div className="ai-input-row">
