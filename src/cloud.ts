@@ -13,13 +13,14 @@ import {
   type Note, type Folder,
 } from './db'
 
+// Env vars win; otherwise fall back to the project's public web config (not a secret)
 const config = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY as string | undefined,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string | undefined,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID as string | undefined,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string | undefined,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string | undefined,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID as string | undefined,
+  apiKey: (import.meta.env.VITE_FIREBASE_API_KEY as string | undefined) || 'AIzaSyA0f-_hXwQpEx5RmEML-EXvExEGdYv_ZJY',
+  authDomain: (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string | undefined) || 'chaboxer-d5ee6.firebaseapp.com',
+  projectId: (import.meta.env.VITE_FIREBASE_PROJECT_ID as string | undefined) || 'chaboxer-d5ee6',
+  storageBucket: (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string | undefined) || 'chaboxer-d5ee6.firebasestorage.app',
+  messagingSenderId: (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string | undefined) || '441049253121',
+  appId: (import.meta.env.VITE_FIREBASE_APP_ID as string | undefined) || '1:441049253121:web:5daa9d7f0ad1423c080700',
 }
 
 export const isCloudConfigured = Boolean(config.apiKey && config.projectId)
