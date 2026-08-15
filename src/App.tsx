@@ -89,6 +89,7 @@ function App() {
   const [aiBusy, setAiBusy] = useState(false)
   const [streamText, setStreamText] = useState('')
   const [agentActivity, setAgentActivity] = useState<string[]>([])
+  const [aiMenuOpen, setAiMenuOpen] = useState(false)
   // Voice: dictation into the chat input + optional spoken replies
   const [listening, setListening] = useState(false)
   const [speakReplies, setSpeakReplies] = useState(false)
@@ -1595,19 +1596,34 @@ ${renderMarkdown(noteBody)}
         <aside className="ai-panel">
           <div className="ai-panel-header">
             <span className="ai-panel-title">✦ Chaboxer AI</span>
-            <button
-              className={`ai-panel-action ai-mode-toggle ${agentMode ? 'agent' : ''}`}
-              title={agentMode ? 'Agent mode: edits apply automatically. Click to review each edit.' : 'Review mode: you approve each edit. Click for agent mode (auto-apply).'}
-              onClick={toggleAgentMode}
-            >
-              {agentMode ? '⚡ Agent' : '🛡 Review'}
-            </button>
-            <button className={`ai-panel-action ${speakReplies ? 'speak-on' : ''}`} title={speakReplies ? 'Spoken replies on — click to mute' : 'Read replies aloud'} onClick={toggleSpeak}>🔊</button>
-            <button className="ai-panel-action" title="Undo last AI edit" onClick={undoLastAiEdit}>↶</button>
-            <button className="ai-panel-action" title="Daily briefing: recent notes + open tasks" onClick={sendBriefing} disabled={aiBusy || !apiKey}>☀</button>
-            <button className="ai-panel-action" title="Start a new chat (history is kept)" onClick={newChat}>New</button>
-            <button className="ai-panel-action" title="Clear memory" onClick={clearChat}>Clear</button>
+            <button className="ai-panel-action" title="Start a new chat (history is kept)" onClick={newChat}>＋ New</button>
+            <div className="ai-overflow-wrap">
+              <button className="ai-panel-action" title="More actions" onClick={() => setAiMenuOpen(!aiMenuOpen)}>⋯</button>
+              {aiMenuOpen && (
+                <div className="ai-overflow-menu" onClick={() => setAiMenuOpen(false)}>
+                  <button onClick={sendBriefing} disabled={aiBusy || !apiKey}>☀ Daily briefing</button>
+                  <button onClick={toggleSpeak}>{speakReplies ? '🔇 Mute spoken replies' : '🔊 Read replies aloud'}</button>
+                  <button onClick={undoLastAiEdit}>↶ Undo last AI edit</button>
+                  <button className="danger" onClick={clearChat}>🗑 Clear chat history</button>
+                </div>
+              )}
+            </div>
             <button className="ai-panel-action" title="Close" onClick={() => setChatOpen(false)}>✕</button>
+          </div>
+          <div className="ai-mode-row">
+            <div className="ai-mode-seg" role="radiogroup" aria-label="Edit mode">
+              <button
+                className={!agentMode ? 'active' : ''}
+                title="You approve each edit with a diff before it's applied"
+                onClick={() => { if (agentMode) toggleAgentMode() }}
+              >🛡 Review</button>
+              <button
+                className={agentMode ? 'active agent' : ''}
+                title="Edits apply automatically without approval"
+                onClick={() => { if (!agentMode) toggleAgentMode() }}
+              >⚡ Agent</button>
+            </div>
+            <span className="ai-mode-hint">{agentMode ? 'edits auto-apply' : 'you approve each edit'}</span>
           </div>
           {!apiKey ? (
             <div className="ai-key-setup">

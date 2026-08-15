@@ -936,6 +936,101 @@
   color: #4ade80;
 }
 
+/* Mode row: segmented Review/Agent control */
+.ai-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.ai-mode-seg {
+  display: flex;
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.ai-mode-seg button {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ai-mode-seg button.active {
+  background: rgba(167, 139, 250, 0.2);
+  color: #c4b5fd;
+}
+
+.ai-mode-seg button.active.agent {
+  background: rgba(250, 204, 21, 0.15);
+  color: #facc15;
+}
+
+.ai-mode-hint {
+  font-size: 11px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Overflow menu for low-frequency actions */
+.ai-overflow-wrap {
+  position: relative;
+}
+
+.ai-overflow-menu {
+  position: absolute;
+  top: 28px;
+  right: 0;
+  z-index: 30;
+  background: #0f172a;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  min-width: 190px;
+}
+
+.ai-overflow-menu button {
+  background: none;
+  border: none;
+  color: #cbd5e1;
+  font-size: 12.5px;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ai-overflow-menu button:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.ai-overflow-menu button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ai-overflow-menu button.danger {
+  color: #f87171;
+}
+
+.ai-overflow-menu button.danger:hover {
+  background: rgba(248, 113, 113, 0.12);
+}
+
 /* Voice dictation button */
 .ai-mic-btn {
   align-self: flex-end;
