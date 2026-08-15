@@ -645,8 +645,8 @@
 .ai-panel-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px 14px;
+  gap: 4px;
+  padding: 12px 10px 12px 14px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.1);
 }
 
@@ -655,6 +655,9 @@
   font-size: 13px;
   font-weight: 600;
   color: #a78bfa;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ai-panel-action {
@@ -663,8 +666,15 @@
   color: #64748b;
   font-size: 12px;
   cursor: pointer;
-  padding: 4px 8px;
+  padding: 4px 6px;
   border-radius: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.ai-panel-action:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .ai-panel-action:hover {
@@ -804,6 +814,29 @@
   font-weight: 600;
   color: #facc15;
   margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ai-tool-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(167, 139, 250, 0.18);
+  border: 1px solid rgba(167, 139, 250, 0.35);
+  color: #a78bfa;
+  flex-shrink: 0;
+}
+
+.ai-tool-badge.danger {
+  background: rgba(248, 113, 113, 0.15);
+  border-color: rgba(248, 113, 113, 0.4);
+  color: #f87171;
 }
 
 .ai-approval-preview {
@@ -819,6 +852,22 @@
 .ai-approval-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ai-always-btn {
+  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  background: rgba(250, 204, 21, 0.1);
+  border: 1px solid rgba(250, 204, 21, 0.35);
+  color: #facc15;
+  margin-left: auto;
+}
+
+.ai-always-btn:hover {
+  background: rgba(250, 204, 21, 0.22);
 }
 
 .ai-approve-btn,
@@ -877,6 +926,64 @@
 
 .ai-diff .diff-ctx {
   opacity: 0.6;
+}
+
+/* Live agent activity feed while tools run */
+.ai-activity {
+  border-left: 2px solid rgba(167, 139, 250, 0.4);
+  margin: 4px 0 4px 6px;
+  padding: 4px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ai-activity-line {
+  font-size: 12px;
+  color: #94a3b8;
+  animation: activity-in 0.25s ease;
+}
+
+@keyframes activity-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Approved/rejected decision chips in the transcript */
+.ai-feedback-chip {
+  align-self: center;
+  font-size: 11px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  margin: 2px 0;
+  max-width: 90%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-feedback-chip.approved {
+  background: rgba(74, 222, 128, 0.1);
+  border: 1px solid rgba(74, 222, 128, 0.3);
+  color: #4ade80;
+}
+
+.ai-feedback-chip.rejected {
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  color: #f87171;
+}
+
+/* Blinking cursor on the streaming draft */
+.ai-msg-body.streaming::after {
+  content: '\258b';
+  color: #a78bfa;
+  animation: cursor-blink 1s steps(2) infinite;
+}
+
+@keyframes cursor-blink {
+  from { opacity: 1; }
+  to { opacity: 0; }
 }
 
 .ai-btn {

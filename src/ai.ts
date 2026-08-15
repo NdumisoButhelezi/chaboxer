@@ -272,6 +272,7 @@ export async function runAI(
   actions: AIActions,
   requestApproval?: ApprovalGate, // undefined = agent mode (auto-apply)
   onToken?: (text: string) => void, // streaming: called with the answer-so-far
+  onProgress?: (activity: string) => void, // live tool activity for the UI
 ): Promise<string> {
   const model = createLLM(apiKey).bindTools(TOOLS)
 
@@ -395,6 +396,17 @@ export async function runAI(
         }
       } catch (err) {
         result = `error: ${err instanceof Error ? err.message : String(err)}`
+      }
+      // Surface a friendly activity line in the chat UI
+      if (onProgress) {
+        const friendly: Record<string, string> = {
+          create_note: 'Creating note', append_to_note: 'Appending to note',
+          replace_note_body: 'Rewriting note', open_note: 'Opening note',
+          delete_note: 'Deleting note', move_note: 'Moving note',
+          search_notes: 'Searching notes', save_preference: 'Saving preference',
+        }
+        const failed = result.startsWith('error')
+        onProgress(`${failed ? '\u26a0' : '\u2713'} ${friendly[call.name] ?? call.name}${failed ? ` — ${result}` : ''}`)
       }
       messages.push(new ToolMessage({ content: result, tool_call_id: call.id ?? '' }))
     }

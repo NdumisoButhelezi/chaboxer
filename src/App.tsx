@@ -88,6 +88,7 @@ function App() {
   const [chatInput, setChatInput] = useState('')
   const [aiBusy, setAiBusy] = useState(false)
   const [streamText, setStreamText] = useState('')
+  const [agentActivity, setAgentActivity] = useState<string[]>([])
   // Agent mode: true = auto-apply AI edits, false = review each edit (human in the loop)
   const [agentMode, setAgentMode] = useState(false)
   const agentModeRef = useRef(agentMode)
@@ -293,7 +294,7 @@ function App() {
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [chatMessages, aiBusy, pendingAction, streamText])
+  }, [chatMessages, aiBusy, pendingAction, streamText, agentActivity])
 
   const today = () =>
     new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
@@ -906,7 +907,12 @@ ${renderMarkdown(body)}
     return new Promise<boolean>((resolve) => setPendingAction({ action, resolve }))
   }
 
-  const resolvePending = (ok: boolean) => {
+  const resolvePending = (ok: boolean, alwaysAllow = false) => {
+    if (alwaysAllow) {
+      setAgentMode(true)
+      agentModeRef.current = true
+      putSetting('ai-agent-mode', 'on')
+    }
     if (pendingAction) {
       // Persist the human decision — context for future turns + reinforcement signal
       const fb: ChatMessage = {
@@ -943,12 +949,14 @@ ${renderMarkdown(body)}
     setChatMessages((prev) => [...prev, userMsg])
     putChatMessage(userMsg)
     setAiBusy(true)
+    setAgentActivity([])
     try {
       const { runAI } = await import('./ai')
       const reply = await runAI(
         apiKey, text, chatMessages, notesRef.current.filter((n) => !n.deletedAt), activeId, aiActions,
         requestApproval,
         setStreamText,
+        (activity) => setAgentActivity((prev) => [...prev, activity]),
       )
       const aiMsg: ChatMessage = {
         id: Date.now() + 1, role: 'assistant', content: reply, createdAt: new Date().toISOString(),
@@ -968,6 +976,7 @@ ${renderMarkdown(body)}
     } finally {
       setAiBusy(false)
       setStreamText('')
+      setAgentActivity([])
     }
   }
 
@@ -1493,6 +1502,9 @@ ${renderMarkdown(body)}
                   </div>
                 )}
                 {chatMessages.map((m) => (
+                  m.feedback ? (
+                    <div key={m.id} className={`ai-feedback-chip ${m.feedback}`}>{m.content}</div>
+                  ) : (
                   <div key={m.id} className={`ai-msg ${m.role}`}>
                     <div className="ai-msg-meta">
                       {m.role === 'user' ? 'You' : 'AI'} &middot; {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -1501,10 +1513,21 @@ ${renderMarkdown(body)}
                       ? <div className="ai-msg-body md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
                       : <div className="ai-msg-body">{m.content}</div>}
                   </div>
+                  )
                 ))}
+                {aiBusy && agentActivity.length > 0 && (
+                  <div className="ai-activity">
+                    {agentActivity.map((a, i) => <div key={i} className="ai-activity-line">{a}</div>)}
+                  </div>
+                )}
                 {pendingAction && (
                   <div className="ai-approval">
-                    <div className="ai-approval-title">✋ AI wants to: {pendingAction.action.title}</div>
+                    <div className="ai-approval-title">
+                      <span className={`ai-tool-badge ${pendingAction.action.tool === 'delete_note' ? 'danger' : ''}`}>
+                        {pendingAction.action.tool.replace(/_/g, ' ')}
+                      </span>
+                      {pendingAction.action.title}
+                    </div>
                     {pendingAction.action.oldPreview !== undefined ? (
                       <pre className="ai-approval-preview ai-diff">
                         {lineDiff(pendingAction.action.oldPreview, pendingAction.action.preview).map((d, i) => (
@@ -1519,12 +1542,13 @@ ${renderMarkdown(body)}
                     <div className="ai-approval-actions">
                       <button className="ai-approve-btn" onClick={() => resolvePending(true)}>✓ Apply</button>
                       <button className="ai-reject-btn" onClick={() => resolvePending(false)}>✕ Reject</button>
+                      <button className="ai-always-btn" title="Apply and switch to agent mode (auto-apply future edits)" onClick={() => resolvePending(true, true)}>⚡ Always allow</button>
                     </div>
                   </div>
                 )}
                 {aiBusy && !pendingAction && (
                   streamText
-                    ? <div className="ai-msg assistant"><div className="ai-msg-body md" dangerouslySetInnerHTML={{ __html: renderMarkdown(streamText) }} /></div>
+                    ? <div className="ai-msg assistant"><div className="ai-msg-body md streaming" dangerouslySetInnerHTML={{ __html: renderMarkdown(streamText) }} /></div>
                     : <div className="ai-msg assistant"><div className="ai-msg-body typing">Thinking&hellip;</div></div>
                 )}
                 <div ref={chatEndRef} />
