@@ -15,6 +15,8 @@ function inline(text: string): string {
   out = out.replace(/_([^_]+)_/g, '<em>$1</em>')
   out = out.replace(/~~([^~]+)~~/g, '<del>$1</del>')
   out = out.replace(/==([^=]+)==/g, '<mark>$1</mark>')
+  // [[123|Title]] deep-links by note id (AI chat); [[Title]] links by title
+  out = out.replace(/\[\[(\d+)\|([^\]]+)\]\]/g, '<span class="wikilink" data-note-id="$1">$2</span>')
   out = out.replace(/\[\[([^\]]+)\]\]/g, '<span class="wikilink">$1</span>')
   out = out.replace(
     /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,

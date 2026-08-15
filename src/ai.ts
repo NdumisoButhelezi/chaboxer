@@ -4,7 +4,7 @@ import {
   type BaseMessage, type AIMessageChunk,
 } from '@langchain/core/messages'
 import type { Note, ChatMessage } from './db'
-import { getAllEmbeddings, putEmbedding, getSetting, putSetting, type NoteEmbedding } from './db'
+import { getAllEmbeddings, putEmbedding, getSetting, putSetting, putEditLog, type NoteEmbedding } from './db'
 
 export interface AIActions {
   createNote(title: string, body: string, folderName?: string): number
@@ -23,8 +23,9 @@ export interface PendingAction {
   oldPreview?: string // previous body, for diff display on rewrites
 }
 
-// Return true to apply the action, false to reject it
-export type ApprovalGate = (action: PendingAction) => Promise<boolean>
+// Return ok=true to apply; content overrides the proposed text when the user edited it
+export interface ApprovalDecision { ok: boolean; content?: string }
+export type ApprovalGate = (action: PendingAction) => Promise<ApprovalDecision>
 
 // LLM backend config — env wins over the key passed from the UI.
 // Base URL lets you target any OpenAI-compatible server (Azure, Ollama, vLLM, OpenRouter...).
@@ -211,6 +212,20 @@ const TOOLS = [
   {
     type: 'function' as const,
     function: {
+      name: 'review_vault',
+      description: 'Walk notes for a status report. mode "all" audits EVERY note (use for status checks, audits, "what needs attention"); "recent" only notes touched in the last 2 days. Returns per-note stats: open/done task counts, word count, staleness, excerpt.',
+      parameters: {
+        type: 'object',
+        properties: {
+          mode: { type: 'string', enum: ['all', 'recent'], description: 'Scan scope' },
+        },
+        required: ['mode'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
       name: 'save_preference',
       description: 'Remember a lasting user preference about how they like their notes written or organised (e.g. after a rejected edit). Keep it to one short sentence.',
       parameters: {
@@ -240,30 +255,32 @@ function buildSystemPrompt(notes: Note[], activeId: number | null, retrieved: No
         .join('\n\n')}\n`
     : ''
 
-  return `You are Chaboxer AI, an assistant living inside a markdown notepad app.
+  return `You are Chaboxer AI, embedded in a local-first markdown notes app.
 Today's date: ${new Date().toISOString().slice(0, 10)}.
 
-You can read all the user's notes, summarize and analyse them, and take actions with tools:
-create_note, append_to_note, replace_note_body, open_note, delete_note, move_note, read_note, search_notes, save_preference.
+## Operating rules
+- You read and write notes ONLY through the tools below — never claim an action succeeded unless the matching tool call returned success. Before saying a task is done, confirm which tool call produced the result.
+- Note edits are STAGED for user review (unless agent mode auto-applies). If a tool result says the user REJECTED an edit, do not retry it; call save_preference with what you learned, then ask what they want instead.
+- When referencing a note in CHAT replies, ALWAYS use [[noteId|Title]] syntax (e.g. [[${notes[0]?.id ?? 123}|${notes[0]?.title ?? 'Example'}]]) — the client renders it as a clickable deep-link by id. Never just bold a title; ids survive renames, titles may collide.
+- Inside NOTE BODIES, use [[Note Title]] wikilinks and #tags — they build the graph view.
+- If a request is ambiguous about scope (one note vs whole vault), ask before running a full vault scan.
 
-APP GUIDE (what this software can do — use it fully and teach the user):
-- Notes are markdown: # headings, **bold**, *italic*, - lists, - [ ] task checkboxes, > quotes, ==highlight==, tables, \`code\`.
-- [[Note Title]] creates a clickable wikilink to another note; clicking opens (or creates) it. #tags work anywhere.
-- Notes can be organised into folders (drag & drop), pinned, and soft-deleted to a 30-day trash.
-- A graph view visualises connections between notes, tags and folders — wikilinks and tags build the graph.
-- There is a daily-journal note per day, cloud sync via Google sign-in, offline PWA install, and export to markdown.
-- Keyboard: Ctrl+B bold, Ctrl+I italic, Ctrl+E code, Ctrl+S save.
+## Capability manifest
+- Notes are markdown: # headings, **bold**, - lists, "- [ ]"/"- [x]" task checkboxes (first-class primitive — briefings depend on them), > quotes, ==highlight==, tables, \`code\`.
+- create_note(title, body, folderName?) → creates a note, returns its id; folderName files it (folder created if missing — prefer existing folders from the index).
+- append_to_note(noteId, text) / replace_note_body(noteId, body) → staged edits with diff review.
+- open_note(noteId) → navigates the editor there; call after creating/editing so the user sees it.
+- delete_note(noteId) → soft-delete to 30-day trash (staged). move_note(noteId, folderName) → refile.
+- read_note(noteId) → FULL content; use before reviewing or editing any note not already in context.
+- search_notes(query) → semantic search when the index preview isn't enough.
+- review_vault(mode) → per-note stats for audits: "all" walks EVERY note (use for status checks / "what needs attention" — staleness ≠ recency), "recent" only last-2-days.
+- save_preference(text) → persist a lasting user preference (esp. after rejections).
+- App features you can reference: graph view (wikilinks/tags = edges), folders, pins, daily journal note per day, Google cloud sync, offline PWA, per-note markdown/PDF/Word export, Ctrl+B/I/E/S shortcuts.
 
-Rules:
-- When the user asks you to write/save/take notes, use the tools — don't just answer in chat.
-- After creating or editing a note, call open_note so the user sees it.
-- Write note bodies in rich markdown (headings, lists, tasks, **bold**, tables where useful).
-- Use [[wikilinks]] and #tags in note bodies to connect related notes — this powers the graph view.
-- In CHAT replies, whenever you mention a note, write its title as [[Note Title]] — the user can click it to jump there.
-- When asked to review/give feedback on notes, call read_note on each relevant note first so feedback is grounded in full content, then reference each note with [[wikilinks]].
-- When summarizing chats or notes, be concise and structured.
-- Dates matter: notes carry created/updated dates; use them when the user asks about "recent", "today", "this week", etc.
-- If the user rejects one of your edits, call save_preference with what you learned, then adjust.
+## Report format (reviews/briefings)
+- One line per note: verdict (stale | has open tasks | formatting issue | empty | looks good) + [[noteId|Title]] link + one short remark. Scannable report, not prose paragraphs.
+- Dates matter: use created/updated for "recent", "today", "this week".
+- Keep summaries concise and structured; write note bodies in rich markdown.
 ${preferences ? `\nLEARNED USER PREFERENCES (follow these):\n${preferences}\n` : ''}
 
 NOTE INDEX (${notes.length} notes):
@@ -361,13 +378,23 @@ export async function runAI(
                 : call.name === 'delete_note'
                   ? { tool: call.name, title: `Delete "${target?.title ?? `note ${args.noteId}`}" (moves to trash)`, preview: target?.body.slice(0, 500) ?? '' }
                   : { tool: call.name, title: `Rewrite "${target?.title ?? `note ${args.noteId}`}"`, preview: String(args.body ?? ''), oldPreview: target?.body ?? '' }
-          const approved = await requestApproval(pending)
-          if (!approved) {
+          const decision = await requestApproval(pending)
+          if (!decision.ok) {
             messages.push(new ToolMessage({ content: 'The user REJECTED this edit. Do not retry it; ask what they would like instead.', tool_call_id: call.id ?? '' }))
             continue
           }
+          // The user edited the proposed content before applying
+          if (decision.content !== undefined) {
+            if (call.name === 'create_note' || call.name === 'replace_note_body') args.body = decision.content
+            else if (call.name === 'append_to_note') {
+              // Diff showed the combined body; strip the old part back out
+              const old = target?.body ?? ''
+              args.text = decision.content.startsWith(old) ? decision.content.slice(old.length).replace(/^\n+/, '') : decision.content
+            }
+          }
         }
 
+        const target = notes.find((n) => n.id === Number(args.noteId))
         switch (call.name) {
           case 'create_note': {
             const id = actions.createNote(
@@ -375,25 +402,35 @@ export async function runAI(
               String(args.body ?? ''),
               args.folderName ? String(args.folderName) : undefined,
             )
+            putEditLog({ id: Date.now() + Math.random(), noteId: id, tool: call.name, changeType: 'insert', before: '', after: String(args.body ?? ''), createdAt: new Date().toISOString() })
             result = `created note id:${id}`
             break
           }
-          case 'append_to_note':
-            result = actions.appendToNote(Number(args.noteId), String(args.text ?? ''))
-              ? 'appended' : `error: note ${args.noteId} not found`
+          case 'append_to_note': {
+            const before = target?.body ?? ''
+            const ok = actions.appendToNote(Number(args.noteId), String(args.text ?? ''))
+            if (ok) putEditLog({ id: Date.now() + Math.random(), noteId: Number(args.noteId), tool: call.name, changeType: 'edit', before, after: before ? `${before}\n\n${String(args.text ?? '')}` : String(args.text ?? ''), createdAt: new Date().toISOString() })
+            result = ok ? 'appended' : `error: note ${args.noteId} not found`
             break
-          case 'replace_note_body':
-            result = actions.replaceNoteBody(Number(args.noteId), String(args.body ?? ''))
-              ? 'replaced' : `error: note ${args.noteId} not found`
+          }
+          case 'replace_note_body': {
+            const before = target?.body ?? ''
+            const ok = actions.replaceNoteBody(Number(args.noteId), String(args.body ?? ''))
+            if (ok) putEditLog({ id: Date.now() + Math.random(), noteId: Number(args.noteId), tool: call.name, changeType: 'edit', before, after: String(args.body ?? ''), createdAt: new Date().toISOString() })
+            result = ok ? 'replaced' : `error: note ${args.noteId} not found`
             break
+          }
           case 'open_note':
             result = actions.openNote(Number(args.noteId))
               ? 'opened' : `error: note ${args.noteId} not found`
             break
-          case 'delete_note':
-            result = actions.deleteNote(Number(args.noteId))
-              ? 'moved to trash' : `error: note ${args.noteId} not found`
+          case 'delete_note': {
+            const before = target?.body ?? ''
+            const ok = actions.deleteNote(Number(args.noteId))
+            if (ok) putEditLog({ id: Date.now() + Math.random(), noteId: Number(args.noteId), tool: call.name, changeType: 'delete', before, after: '', createdAt: new Date().toISOString() })
+            result = ok ? 'moved to trash' : `error: note ${args.noteId} not found`
             break
+          }
           case 'move_note':
             result = actions.moveNote(Number(args.noteId), args.folderName ? String(args.folderName) : null)
               ? 'moved' : `error: note ${args.noteId} not found`
@@ -410,6 +447,24 @@ export async function runAI(
             result = found.length
               ? found.map((n) => `id:${n.id} "${n.title}"\n${n.body.replace(/\s+/g, ' ').slice(0, 300)}`).join('\n---\n')
               : 'no matching notes'
+            break
+          }
+          case 'review_vault': {
+            const mode = String(args.mode ?? 'all')
+            const cutoff = Date.now() - 2 * 24 * 3600 * 1000
+            const scanned = (mode === 'recent'
+              ? notes.filter((n) => new Date(n.updatedAt).getTime() >= cutoff)
+              : notes
+            ).slice(0, 60)
+            result = scanned.length
+              ? scanned.map((n) => {
+                  const open = (n.body.match(/^\s*[-*] \[ \]/gm) ?? []).length
+                  const done = (n.body.match(/^\s*[-*] \[x\]/gim) ?? []).length
+                  const words = n.body.trim() ? n.body.trim().split(/\s+/).length : 0
+                  const staleDays = Math.floor((Date.now() - new Date(n.updatedAt).getTime()) / 86400000)
+                  return `id:${n.id} "${n.title}" | updated ${n.updatedAt.slice(0, 10)} (${staleDays}d ago) | ${words} words | ${open} open / ${done} done tasks\n  excerpt: ${n.body.replace(/\s+/g, ' ').slice(0, 200) || '(empty)'}`
+                }).join('\n')
+              : 'no notes in scope'
             break
           }
           case 'save_preference': {
@@ -436,7 +491,7 @@ export async function runAI(
           replace_note_body: 'Rewriting note', open_note: 'Opening note',
           delete_note: 'Deleting note', move_note: 'Moving note',
           read_note: 'Reading note', search_notes: 'Searching notes',
-          save_preference: 'Saving preference',
+          review_vault: 'Scanning vault', save_preference: 'Saving preference',
         }
         const failed = result.startsWith('error')
         onProgress(`${failed ? '\u26a0' : '\u2713'} ${friendly[call.name] ?? call.name}${failed ? ` — ${result}` : ''}`)

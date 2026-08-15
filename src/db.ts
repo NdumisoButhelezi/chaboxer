@@ -1,10 +1,11 @@
 ﻿const DB_NAME = 'chaboxer-notes'
-const DB_VERSION = 4
+const DB_VERSION = 5
 const STORE_NAME = 'notes'
 const FOLDER_STORE = 'folders'
 const CHAT_STORE = 'chat'
 const SETTINGS_STORE = 'settings'
 const EMBED_STORE = 'embeddings'
+const EDITLOG_STORE = 'editlog'
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -25,6 +26,9 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(EMBED_STORE)) {
         db.createObjectStore(EMBED_STORE, { keyPath: 'id' })
+      }
+      if (!db.objectStoreNames.contains(EDITLOG_STORE)) {
+        db.createObjectStore(EDITLOG_STORE, { keyPath: 'id' })
       }
     }
     request.onsuccess = () => resolve(request.result)
@@ -187,6 +191,29 @@ export function putEmbedding(e: NoteEmbedding): Promise<void> {
 
 export function deleteEmbedding(id: number): Promise<void> {
   return remove(EMBED_STORE, id)
+}
+
+// Per-note changelog of AI edits — powers "undo last AI edit"
+export interface EditLogEntry {
+  id: number
+  noteId: number
+  tool: string
+  changeType: 'insert' | 'edit' | 'delete'
+  before: string
+  after: string
+  createdAt: string
+}
+
+export function getEditLog(): Promise<EditLogEntry[]> {
+  return getAll<EditLogEntry>(EDITLOG_STORE)
+}
+
+export function putEditLog(e: EditLogEntry): Promise<void> {
+  return put(EDITLOG_STORE, e)
+}
+
+export function deleteEditLog(id: number): Promise<void> {
+  return remove(EDITLOG_STORE, id)
 }
 
 export function putChatMessage(msg: ChatMessage): Promise<void> {

@@ -6,7 +6,7 @@ import {
   getSetting, putSetting,
   type Note, type Folder, type ChatMessage,
 } from './db'
-import type { AIActions, PendingAction } from './ai'
+import type { AIActions, PendingAction, ApprovalDecision } from './ai'
 import type { User } from 'firebase/auth'
 import { renderMarkdown } from './markdown'
 import GraphView from './GraphView'
@@ -93,7 +93,8 @@ function App() {
   const [agentMode, setAgentMode] = useState(false)
   const agentModeRef = useRef(agentMode)
   agentModeRef.current = agentMode
-  const [pendingAction, setPendingAction] = useState<{ action: PendingAction; resolve: (ok: boolean) => void } | null>(null)
+  const [pendingAction, setPendingAction] = useState<{ action: PendingAction; resolve: (d: ApprovalDecision) => void } | null>(null)
+  const [approvalDraft, setApprovalDraft] = useState<string | null>(null) // non-null = user is editing the proposal
   const [chatSession, setChatSession] = useState(0)
   const chatSessionRef = useRef(chatSession)
   chatSessionRef.current = chatSession
@@ -413,10 +414,15 @@ function App() {
     if (note) selectNote(note)
   }
 
-  // Clicking a [[wikilink]] in preview opens (or creates) that note
+  // Clicking a [[wikilink]] in preview or chat opens that note (by id when present)
   const handlePreviewClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const el = (e.target as HTMLElement).closest('.wikilink')
     if (!el) return
+    const idAttr = el.getAttribute('data-note-id')
+    if (idAttr) {
+      const byId = notesRef.current.find((n) => n.id === Number(idAttr) && !n.deletedAt)
+      if (byId) { selectNote(byId); return }
+    }
     const name = el.textContent?.trim()
     if (!name) return
     const existing = notesRef.current.find((n) => n.title.toLowerCase() === name.toLowerCase())
@@ -910,9 +916,9 @@ ${renderMarkdown(noteBody)}
   }
 
   // Human-in-the-loop gate: resolves when the user approves/rejects in the chat UI
-  const requestApproval = (action: PendingAction): Promise<boolean> => {
-    if (agentModeRef.current) return Promise.resolve(true)
-    return new Promise<boolean>((resolve) => setPendingAction({ action, resolve }))
+  const requestApproval = (action: PendingAction): Promise<ApprovalDecision> => {
+    if (agentModeRef.current) return Promise.resolve({ ok: true })
+    return new Promise<ApprovalDecision>((resolve) => setPendingAction({ action, resolve }))
   }
 
   const resolvePending = (ok: boolean, alwaysAllow = false) => {
@@ -925,16 +931,48 @@ ${renderMarkdown(noteBody)}
       // Persist the human decision — context for future turns + reinforcement signal
       const fb: ChatMessage = {
         id: Date.now(), role: 'assistant',
-        content: `${ok ? '✓ Edit approved' : '✕ Edit rejected'}: ${pendingAction.action.title}`,
+        content: `${ok ? '✓ Edit approved' : '✕ Edit rejected'}${approvalDraft !== null && ok ? ' (with manual edits)' : ''}: ${pendingAction.action.title}`,
         createdAt: new Date().toISOString(),
         sessionId: chatSessionRef.current,
         feedback: ok ? 'approved' : 'rejected',
       }
       setChatMessages((prev) => [...prev, fb])
       putChatMessage(fb)
+      pendingAction.resolve({ ok, ...(ok && approvalDraft !== null ? { content: approvalDraft } : {}) })
     }
-    pendingAction?.resolve(ok)
     setPendingAction(null)
+    setApprovalDraft(null)
+  }
+
+  // Revert the most recent AI edit using the per-note changelog
+  const undoLastAiEdit = async () => {
+    const { getEditLog, deleteEditLog } = await import('./db')
+    const log = await getEditLog()
+    if (log.length === 0) { window.alert('No AI edits to undo.'); return }
+    const last = log.sort((a, b) => b.id - a.id)[0]
+    const note = notesRef.current.find((n) => n.id === last.noteId)
+    if (last.changeType === 'insert') {
+      if (note && !note.deletedAt) deleteNote(note.id)
+    } else if (last.changeType === 'delete') {
+      if (note) {
+        const restored = { ...note, deletedAt: null }
+        setNotes((prev) => prev.map((n) => (n.id === note.id ? restored : n)))
+        putNote(restored)
+      }
+    } else if (note) {
+      const reverted: Note = { ...note, body: last.before, updatedAt: new Date().toISOString() }
+      setNotes((prev) => prev.map((n) => (n.id === note.id ? reverted : n)))
+      putNote(reverted)
+      if (activeId === note.id) setBody(last.before)
+    }
+    await deleteEditLog(last.id)
+    const fb: ChatMessage = {
+      id: Date.now(), role: 'assistant',
+      content: `↶ Undid AI ${last.changeType} on "${note?.title ?? `note ${last.noteId}`}"`,
+      createdAt: new Date().toISOString(), sessionId: chatSessionRef.current, feedback: 'rejected',
+    }
+    setChatMessages((prev) => [...prev, fb])
+    putChatMessage(fb)
   }
 
   // Start a fresh conversation; previous sessions remain stored in IndexedDB
@@ -989,7 +1027,7 @@ ${renderMarkdown(noteBody)}
   }
 
   const sendBriefing = () => sendChat(
-    'Give me my briefing for today: summarize notes created or updated in the last 2 days, then list all open tasks (unchecked "- [ ]") across my notes grouped by note. Be concise.'
+    'Run review_vault with mode "all" and give me my briefing: a scannable per-note report (verdict + link + one remark), prioritising stale notes and open tasks over merely recent ones. Then list all open tasks grouped by note.'
   )
 
   const clearChat = () => {
@@ -1487,6 +1525,7 @@ ${renderMarkdown(noteBody)}
             >
               {agentMode ? '⚡ Agent' : '🛡 Review'}
             </button>
+            <button className="ai-panel-action" title="Undo last AI edit" onClick={undoLastAiEdit}>↶</button>
             <button className="ai-panel-action" title="Daily briefing: recent notes + open tasks" onClick={sendBriefing} disabled={aiBusy || !apiKey}>☀</button>
             <button className="ai-panel-action" title="Start a new chat (history is kept)" onClick={newChat}>New</button>
             <button className="ai-panel-action" title="Clear memory" onClick={clearChat}>Clear</button>
@@ -1551,7 +1590,14 @@ ${renderMarkdown(noteBody)}
                       </span>
                       {pendingAction.action.title}
                     </div>
-                    {pendingAction.action.oldPreview !== undefined ? (
+                    {approvalDraft !== null ? (
+                      <textarea
+                        className="ai-approval-edit"
+                        value={approvalDraft}
+                        onChange={(e) => setApprovalDraft(e.target.value)}
+                        rows={10}
+                      />
+                    ) : pendingAction.action.oldPreview !== undefined ? (
                       <pre className="ai-approval-preview ai-diff">
                         {lineDiff(pendingAction.action.oldPreview, pendingAction.action.preview).map((d, i) => (
                           <div key={i} className={d.type === '+' ? 'diff-add' : d.type === '-' ? 'diff-del' : 'diff-ctx'}>
@@ -1565,6 +1611,14 @@ ${renderMarkdown(noteBody)}
                     <div className="ai-approval-actions">
                       <button className="ai-approve-btn" onClick={() => resolvePending(true)}>✓ Apply</button>
                       <button className="ai-reject-btn" onClick={() => resolvePending(false)}>✕ Reject</button>
+                      {pendingAction.action.tool !== 'delete_note' && (
+                        <button
+                          className="ai-edit-btn"
+                          onClick={() => setApprovalDraft(approvalDraft === null ? pendingAction.action.preview : null)}
+                        >
+                          {approvalDraft === null ? '✎ Edit' : '↩ Back to diff'}
+                        </button>
+                      )}
                       <button className="ai-always-btn" title="Apply and switch to agent mode (auto-apply future edits)" onClick={() => resolvePending(true, true)}>⚡ Always allow</button>
                     </div>
                   </div>
