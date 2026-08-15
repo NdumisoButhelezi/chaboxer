@@ -1044,6 +1044,24 @@ ${renderMarkdown(noteBody)}
     clearChatHistory()
   }
 
+  // Deterministic deep-links: rewrite known note titles in AI replies to [[id|Title]],
+  // matched against real note ids — don't rely on the model following the syntax
+  const linkifyNotes = (text: string) => {
+    let out = text
+    const live = notesRef.current
+      .filter((n) => !n.deletedAt && n.title.trim().length > 2)
+      .sort((a, b) => b.title.length - a.title.length)
+    for (const n of live) {
+      const esc = n.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      // bold-wrapped or plain title → id link; skip ones already inside [[..|..]]
+      out = out.replace(
+        new RegExp(`\\*\\*${esc}\\*\\*|(?<![[|\\w])${esc}(?![\\]\\w])`, 'g'),
+        `[[${n.id}|${n.title}]]`,
+      )
+    }
+    return out
+  }
+
   // Web Speech API dictation — appends the transcript to the chat input
   const toggleMic = () => {
     if (listening) {
@@ -1632,7 +1650,7 @@ ${renderMarkdown(noteBody)}
                       {m.role === 'user' ? 'You' : 'AI'} &middot; {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </div>
                     {m.role === 'assistant'
-                      ? <div className="ai-msg-body md" onClick={handlePreviewClick} dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
+                      ? <div className="ai-msg-body md" onClick={handlePreviewClick} dangerouslySetInnerHTML={{ __html: renderMarkdown(linkifyNotes(m.content)) }} />
                       : <div className="ai-msg-body">{m.content}</div>}
                   </div>
                   )
