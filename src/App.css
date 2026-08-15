@@ -1312,6 +1312,31 @@
   font-size: 12px;
 }
 
+/* Per-note PDF/Word export buttons */
+.note-export-btn {
+  background: none;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  color: #64748b;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 5px;
+  border-radius: 4px;
+  opacity: 0;
+  flex-shrink: 0;
+}
+
+.note-item:hover .note-export-btn {
+  opacity: 1;
+}
+
+.note-export-btn:hover {
+  background: rgba(167, 139, 250, 0.15);
+  border-color: rgba(167, 139, 250, 0.4);
+  color: #a78bfa;
+}
+
 /* Trash */
 .trash-section {
   margin-top: 12px;

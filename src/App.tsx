@@ -525,8 +525,11 @@ function App() {
 
   const safeName = () => (activeNote?.title ?? 'note').replace(/[\\/:*?"<>|]/g, '-')
 
-  // Full HTML document of the rendered note (used by PDF and Word exports)
-  const noteAsHtml = () => `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${activeNote?.title ?? ''}</title>
+  // Full HTML document of a rendered note (used by PDF and Word exports).
+  // For the open note, use the live editor body (may have unsaved edits).
+  const noteAsHtml = (note: Note) => {
+    const noteBody = note.id === activeId ? body : note.body
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${note.title}</title>
 <style>
 body{font-family:Georgia,'Times New Roman',serif;max-width:720px;margin:40px auto;padding:0 24px;color:#1a1a2e;line-height:1.7}
 h1,h2,h3{color:#0f172a;line-height:1.3}
@@ -539,26 +542,31 @@ mark{background:#fef08a}
 .meta{color:#94a3b8;font-size:13px;margin-bottom:24px}
 li.task{list-style:none;margin-left:-20px}
 </style></head><body>
-<h1>${activeNote?.title ?? ''}</h1>
-<div class="meta">Created ${activeNote ? fmtDate(activeNote.createdAt) : ''} · Updated ${activeNote ? fmtDate(activeNote.updatedAt) : ''}</div>
-${renderMarkdown(body)}
+<h1>${note.title}</h1>
+<div class="meta">Created ${fmtDate(note.createdAt)} · Updated ${fmtDate(note.updatedAt)}</div>
+${renderMarkdown(noteBody)}
 </body></html>`
+  }
+
+  const noteSafeName = (note: Note) => note.title.replace(/[\\/:*?"<>|]/g, '-')
 
   // PDF via the browser's print-to-PDF dialog
-  const exportPdf = () => {
-    if (!activeNote) return
+  const exportPdf = (note?: Note) => {
+    const target = note ?? activeNote
+    if (!target) return
     const win = window.open('', '_blank')
     if (!win) { window.alert('Pop-up blocked — allow pop-ups to export PDF.'); return }
-    win.document.write(noteAsHtml())
+    win.document.write(noteAsHtml(target))
     win.document.close()
     win.focus()
     setTimeout(() => win.print(), 300)
   }
 
   // Word opens HTML saved with a .doc extension natively
-  const exportWord = () => {
-    if (!activeNote) return
-    download(`${safeName()}.doc`, noteAsHtml(), 'application/msword')
+  const exportWord = (note?: Note) => {
+    const target = note ?? activeNote
+    if (!target) return
+    download(`${noteSafeName(target)}.doc`, noteAsHtml(target), 'application/msword')
   }
 
   // LLM-ready prompt: note + context, copied to clipboard
@@ -1005,6 +1013,16 @@ ${renderMarkdown(body)}
           {note.date} &middot; {note.body.slice(0, 30) || 'Empty'}
         </span>
       </div>
+      <button
+        className="note-export-btn"
+        onClick={(e) => { e.stopPropagation(); exportPdf(note) }}
+        title="Export as PDF"
+      >PDF</button>
+      <button
+        className="note-export-btn"
+        onClick={(e) => { e.stopPropagation(); exportWord(note) }}
+        title="Export as Word (.doc)"
+      >DOC</button>
       <button
         className={`pin-btn ${note.pinned ? 'pinned' : ''}`}
         onClick={(e) => { e.stopPropagation(); togglePin(note.id) }}
