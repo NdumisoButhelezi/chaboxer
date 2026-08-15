@@ -1790,4 +1790,55 @@
     padding-top: env(safe-area-inset-top, 0px);
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
+
+  /* Bigger touch targets */
+  .ai-panel-action {
+    font-size: 14px;
+    padding: 8px 10px;
+  }
+
+  .ai-mode-seg button {
+    font-size: 13px;
+    padding: 8px 14px;
+  }
+
+  .ai-approve-btn,
+  .ai-reject-btn,
+  .ai-edit-btn,
+  .ai-always-btn {
+    padding: 10px 16px;
+  }
+
+  .ai-overflow-menu button {
+    padding: 12px 14px;
+    font-size: 14px;
+  }
+
+  /* No hover on touch — keep per-note actions reachable */
+  .note-export-btn,
+  .pin-btn,
+  .delete-btn {
+    opacity: 0.6;
+  }
+
+  /* 16px inputs prevent iOS auto-zoom on focus */
+  .ai-input,
+  .search-input,
+  .ai-approval-edit {
+    font-size: 16px;
+  }
+}
+
+/* Smooth, momentum scrolling everywhere it scrolls */
+.ai-messages,
+.notes-list,
+.sidebar,
+.editor-preview,
+.editor-body,
+.ai-approval-preview,
+.help-body,
+.ai-overflow-menu {
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }

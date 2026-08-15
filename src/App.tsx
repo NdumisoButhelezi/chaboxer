@@ -428,6 +428,8 @@ function App() {
   const handlePreviewClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const el = (e.target as HTMLElement).closest('.wikilink')
     if (!el) return
+    // On mobile the chat covers the screen — close it so the note is visible
+    if (window.innerWidth <= 900) setChatOpen(false)
     const idAttr = el.getAttribute('data-note-id')
     if (idAttr) {
       const byId = notesRef.current.find((n) => n.id === Number(idAttr) && !n.deletedAt)
