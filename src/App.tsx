@@ -90,6 +90,8 @@ function App() {
   const [streamText, setStreamText] = useState('')
   const [agentActivity, setAgentActivity] = useState<string[]>([])
   const [aiMenuOpen, setAiMenuOpen] = useState(false)
+  // Session browser: null = closed, otherwise list of past sessions
+  const [sessionList, setSessionList] = useState<{ id: number; title: string; count: number; last: string }[] | null>(null)
   // Voice: dictation into the chat input + optional spoken replies
   const [listening, setListening] = useState(false)
   const [speakReplies, setSpeakReplies] = useState(false)
@@ -990,6 +992,37 @@ ${renderMarkdown(noteBody)}
     putSetting('chat-session-id', String(id))
     setChatMessages([])
     setPendingAction(null)
+    setSessionList(null)
+  }
+
+  // List past chat sessions, newest first, titled by their first user message
+  const openSessions = async () => {
+    const all = await getChatHistory()
+    const bySession = new Map<number, ChatMessage[]>()
+    for (const m of all) {
+      const s = m.sessionId ?? 0
+      const arr = bySession.get(s) ?? []
+      arr.push(m)
+      bySession.set(s, arr)
+    }
+    const list = [...bySession.entries()]
+      .map(([id, msgs]) => ({
+        id,
+        title: msgs.find((m) => m.role === 'user')?.content.slice(0, 60) ?? '(no messages)',
+        count: msgs.length,
+        last: msgs[msgs.length - 1].createdAt,
+      }))
+      .sort((a, b) => b.last.localeCompare(a.last))
+    setSessionList(list)
+  }
+
+  const switchSession = async (id: number) => {
+    setChatSession(id)
+    putSetting('chat-session-id', String(id))
+    const all = await getChatHistory()
+    setChatMessages(all.filter((m) => (m.sessionId ?? 0) === id))
+    setSessionList(null)
+    setPendingAction(null)
   }
 
   const sendChat = async (preset?: string) => {
@@ -1601,6 +1634,7 @@ ${renderMarkdown(noteBody)}
               <button className="ai-panel-action" title="More actions" onClick={() => setAiMenuOpen(!aiMenuOpen)}>⋯</button>
               {aiMenuOpen && (
                 <div className="ai-overflow-menu" onClick={() => setAiMenuOpen(false)}>
+                  <button onClick={openSessions}>🗂 Chat sessions</button>
                   <button onClick={sendBriefing} disabled={aiBusy || !apiKey}>☀ Daily briefing</button>
                   <button onClick={toggleSpeak}>{speakReplies ? '🔇 Mute spoken replies' : '🔊 Read replies aloud'}</button>
                   <button onClick={undoLastAiEdit}>↶ Undo last AI edit</button>
@@ -1641,6 +1675,27 @@ ${renderMarkdown(noteBody)}
           ) : (
             <>
               <div className="ai-messages">
+                {sessionList && (
+                  <div className="ai-sessions">
+                    <div className="ai-sessions-header">
+                      <span>Chat sessions</span>
+                      <button className="ai-panel-action" onClick={() => setSessionList(null)}>✕</button>
+                    </div>
+                    {sessionList.length === 0 && <div className="ai-hint"><p>No sessions yet.</p></div>}
+                    {sessionList.map((s) => (
+                      <button
+                        key={s.id}
+                        className={`ai-session-item ${s.id === chatSession ? 'current' : ''}`}
+                        onClick={() => switchSession(s.id)}
+                      >
+                        <span className="ai-session-title">{s.title}</span>
+                        <span className="ai-session-meta">
+                          {new Date(s.last).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {s.count} msgs{s.id === chatSession ? ' · current' : ''}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 {chatMessages.length === 0 && (
                   <div className="ai-hint">
                     <p>Ask me anything about your notes — try one:</p>
@@ -1719,7 +1774,7 @@ ${renderMarkdown(noteBody)}
                 )}
                 {aiBusy && !pendingAction && (
                   streamText
-                    ? <div className="ai-msg assistant"><div className="ai-msg-body md streaming" dangerouslySetInnerHTML={{ __html: renderMarkdown(streamText) }} /></div>
+                    ? <div className="ai-msg assistant"><div className="ai-msg-body md streaming" onClick={handlePreviewClick} dangerouslySetInnerHTML={{ __html: renderMarkdown(linkifyNotes(streamText)) }} /></div>
                     : <div className="ai-msg assistant"><div className="ai-msg-body typing">Thinking&hellip;</div></div>
                 )}
                 <div ref={chatEndRef} />
