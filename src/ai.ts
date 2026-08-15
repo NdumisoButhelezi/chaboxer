@@ -1,22 +1,26 @@
-import { ChatOpenAI } from '@langchain/openai'
+import { ChatOpenAI, OpenAIEmbeddings } from '@langchain/openai'
 import {
   SystemMessage, HumanMessage, AIMessage, ToolMessage,
-  type BaseMessage,
+  type BaseMessage, type AIMessageChunk,
 } from '@langchain/core/messages'
 import type { Note, ChatMessage } from './db'
+import { getAllEmbeddings, putEmbedding, getSetting, putSetting, type NoteEmbedding } from './db'
 
 export interface AIActions {
   createNote(title: string, body: string, folderName?: string): number
   appendToNote(noteId: number, text: string): boolean
   replaceNoteBody(noteId: number, body: string): boolean
   openNote(noteId: number): boolean
+  deleteNote(noteId: number): boolean
+  moveNote(noteId: number, folderName: string | null): boolean
 }
 
 // Human-in-the-loop: a proposed edit awaiting user approval
 export interface PendingAction {
-  tool: 'create_note' | 'append_to_note' | 'replace_note_body'
+  tool: 'create_note' | 'append_to_note' | 'replace_note_body' | 'delete_note'
   title: string   // short human-readable description
   preview: string // markdown content that would be written
+  oldPreview?: string // previous body, for diff display on rewrites
 }
 
 // Return true to apply the action, false to reject it
@@ -27,6 +31,7 @@ export type ApprovalGate = (action: PendingAction) => Promise<boolean>
 export const envApiKey = (import.meta.env.VITE_OPENAI_API_KEY as string | undefined) || ''
 const envModel = (import.meta.env.VITE_OPENAI_MODEL as string | undefined) || 'gpt-4o-mini'
 const envBaseURL = (import.meta.env.VITE_OPENAI_BASE_URL as string | undefined) || undefined
+const envEmbedModel = (import.meta.env.VITE_OPENAI_EMBED_MODEL as string | undefined) || 'text-embedding-3-small'
 
 export function createLLM(apiKey: string) {
   return new ChatOpenAI({
@@ -35,6 +40,54 @@ export function createLLM(apiKey: string) {
     temperature: 0.4,
     ...(envBaseURL ? { configuration: { baseURL: envBaseURL } } : {}),
   })
+}
+
+function createEmbedder(apiKey: string) {
+  return new OpenAIEmbeddings({
+    apiKey: envApiKey || apiKey || 'not-needed',
+    model: envEmbedModel,
+    ...(envBaseURL ? { configuration: { baseURL: envBaseURL } } : {}),
+  })
+}
+
+function cosine(a: number[], b: number[]): number {
+  let dot = 0, na = 0, nb = 0
+  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i] }
+  return na && nb ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0
+}
+
+// RAG: keep the embedding cache in sync with notes, then return the top-k
+// semantically relevant notes for the query. Throws if the backend has no
+// embeddings endpoint — callers should fall back gracefully.
+export async function retrieveRelevantNotes(
+  apiKey: string,
+  query: string,
+  notes: Note[],
+  k = 6,
+): Promise<Note[]> {
+  if (notes.length === 0) return []
+  const embedder = createEmbedder(apiKey)
+  const cache = new Map((await getAllEmbeddings()).map((e) => [e.id, e]))
+
+  const stale = notes.filter((n) => cache.get(n.id)?.updatedAt !== n.updatedAt)
+  if (stale.length > 0) {
+    const vectors = await embedder.embedDocuments(
+      stale.map((n) => `${n.title}\n\n${n.body.slice(0, 3000)}`)
+    )
+    stale.forEach((n, i) => {
+      const e: NoteEmbedding = { id: n.id, updatedAt: n.updatedAt, vector: vectors[i] }
+      cache.set(n.id, e)
+      putEmbedding(e) // fire-and-forget
+    })
+  }
+
+  const qv = await embedder.embedQuery(query)
+  return notes
+    .map((n) => ({ n, score: cosine(qv, cache.get(n.id)?.vector ?? []) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, k)
+    .filter((x) => x.score > 0.1)
+    .map((x) => x.n)
 }
 
 const TOOLS = [
@@ -98,9 +151,66 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'delete_note',
+      description: 'Move a note to the trash (recoverable for 30 days).',
+      parameters: {
+        type: 'object',
+        properties: {
+          noteId: { type: 'number', description: 'Id of the note to delete' },
+        },
+        required: ['noteId'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'move_note',
+      description: 'Move a note into a folder (created if missing). Pass folderName null/empty to move it out of any folder.',
+      parameters: {
+        type: 'object',
+        properties: {
+          noteId: { type: 'number', description: 'Id of the note to move' },
+          folderName: { type: 'string', description: 'Target folder name, or empty to unfile' },
+        },
+        required: ['noteId'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'search_notes',
+      description: 'Semantic search across all notes. Returns the most relevant notes with snippets. Use when the note index preview is not enough.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'What to search for' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'save_preference',
+      description: 'Remember a lasting user preference about how they like their notes written or organised (e.g. after a rejected edit). Keep it to one short sentence.',
+      parameters: {
+        type: 'object',
+        properties: {
+          preference: { type: 'string', description: 'One-sentence preference to remember' },
+        },
+        required: ['preference'],
+      },
+    },
+  },
 ]
 
-function buildSystemPrompt(notes: Note[], activeId: number | null): string {
+function buildSystemPrompt(notes: Note[], activeId: number | null, retrieved: Note[] = [], preferences = ''): string {
   const index = notes
     .map((n) => {
       const preview = n.body.replace(/\s+/g, ' ').slice(0, 120)
@@ -109,12 +219,18 @@ function buildSystemPrompt(notes: Note[], activeId: number | null): string {
     .join('\n')
 
   const active = notes.find((n) => n.id === activeId)
+  const ragNotes = retrieved.filter((n) => n.id !== activeId)
+  const ragSection = ragNotes.length
+    ? `\nRELEVANT NOTES (retrieved by semantic search for this request):\n${ragNotes
+        .map((n) => `--- id:${n.id} "${n.title}" ---\n${n.body.slice(0, 3000) || '(empty)'}`)
+        .join('\n\n')}\n`
+    : ''
 
   return `You are Chaboxer AI, an assistant living inside a markdown notepad app.
 Today's date: ${new Date().toISOString().slice(0, 10)}.
 
 You can read all the user's notes, summarize and analyse them, and take actions with tools:
-create_note, append_to_note, replace_note_body, open_note.
+create_note, append_to_note, replace_note_body, open_note, delete_note, move_note, search_notes, save_preference.
 
 Rules:
 - When the user asks you to write/save/take notes, use the tools — don't just answer in chat.
@@ -122,10 +238,12 @@ Rules:
 - Write note bodies in rich markdown (headings, lists, tasks, **bold**, tables where useful).
 - When summarizing chats or notes, be concise and structured.
 - Dates matter: notes carry created/updated dates; use them when the user asks about "recent", "today", "this week", etc.
+- If the user rejects one of your edits, call save_preference with what you learned, then adjust.
+${preferences ? `\nLEARNED USER PREFERENCES (follow these):\n${preferences}\n` : ''}
 
 NOTE INDEX (${notes.length} notes):
 ${index || '(no notes yet)'}
-
+${ragSection}
 ${active ? `FULL CONTENT OF CURRENTLY OPEN NOTE (id:${active.id}, "${active.title}"):\n${active.body || '(empty)'}` : ''}`
 }
 
@@ -153,11 +271,23 @@ export async function runAI(
   activeId: number | null,
   actions: AIActions,
   requestApproval?: ApprovalGate, // undefined = agent mode (auto-apply)
+  onToken?: (text: string) => void, // streaming: called with the answer-so-far
 ): Promise<string> {
   const model = createLLM(apiKey).bindTools(TOOLS)
 
+  const preferences = (await getSetting('ai-preferences').catch(() => '')) || ''
+
+  // RAG: pull semantically relevant notes into the prompt; ignore failures
+  // (e.g. local backends without an embeddings endpoint)
+  let retrieved: Note[] = []
+  try {
+    retrieved = await retrieveRelevantNotes(apiKey, userInput, notes)
+  } catch {
+    retrieved = []
+  }
+
   // Memory: replay persisted chat history (last 30 messages) for context
-  const messages: BaseMessage[] = [new SystemMessage(buildSystemPrompt(notes, activeId))]
+  const messages: BaseMessage[] = [new SystemMessage(buildSystemPrompt(notes, activeId, retrieved, preferences))]
   for (const m of history.slice(-30)) {
     messages.push(m.role === 'user' ? new HumanMessage(m.content) : new AIMessage(m.content))
   }
@@ -165,7 +295,21 @@ export async function runAI(
 
   // Tool-calling loop
   for (let step = 0; step < 6; step++) {
-    const response = await model.invoke(messages)
+    // Stream tokens for live display; fall back to invoke if streaming fails
+    let response: AIMessageChunk | AIMessage
+    try {
+      let acc: AIMessageChunk | undefined
+      let text = ''
+      for await (const chunk of await model.stream(messages)) {
+        acc = acc ? acc.concat(chunk) : chunk
+        const piece = typeof chunk.content === 'string' ? chunk.content : ''
+        if (piece) { text += piece; onToken?.(text) }
+      }
+      if (!acc) throw new Error('empty stream')
+      response = acc
+    } catch {
+      response = await model.invoke(messages)
+    }
     messages.push(response)
 
     const toolCalls = response.tool_calls ?? []
@@ -181,14 +325,16 @@ export async function runAI(
         const args = call.args as Record<string, unknown>
 
         // Human-in-the-loop gate for mutating tools
-        if (requestApproval && (call.name === 'create_note' || call.name === 'append_to_note' || call.name === 'replace_note_body')) {
+        if (requestApproval && (call.name === 'create_note' || call.name === 'append_to_note' || call.name === 'replace_note_body' || call.name === 'delete_note')) {
           const target = notes.find((n) => n.id === Number(args.noteId))
           const pending: PendingAction =
             call.name === 'create_note'
               ? { tool: call.name, title: `Create note "${String(args.title ?? 'Untitled')}"${args.folderName ? ` in folder "${args.folderName}"` : ''}`, preview: String(args.body ?? '') }
               : call.name === 'append_to_note'
                 ? { tool: call.name, title: `Append to "${target?.title ?? `note ${args.noteId}`}"`, preview: String(args.text ?? '') }
-                : { tool: call.name, title: `Rewrite "${target?.title ?? `note ${args.noteId}`}"`, preview: String(args.body ?? '') }
+                : call.name === 'delete_note'
+                  ? { tool: call.name, title: `Delete "${target?.title ?? `note ${args.noteId}`}" (moves to trash)`, preview: target?.body.slice(0, 500) ?? '' }
+                  : { tool: call.name, title: `Rewrite "${target?.title ?? `note ${args.noteId}`}"`, preview: String(args.body ?? ''), oldPreview: target?.body ?? '' }
           const approved = await requestApproval(pending)
           if (!approved) {
             messages.push(new ToolMessage({ content: 'The user REJECTED this edit. Do not retry it; ask what they would like instead.', tool_call_id: call.id ?? '' }))
@@ -218,6 +364,32 @@ export async function runAI(
             result = actions.openNote(Number(args.noteId))
               ? 'opened' : `error: note ${args.noteId} not found`
             break
+          case 'delete_note':
+            result = actions.deleteNote(Number(args.noteId))
+              ? 'moved to trash' : `error: note ${args.noteId} not found`
+            break
+          case 'move_note':
+            result = actions.moveNote(Number(args.noteId), args.folderName ? String(args.folderName) : null)
+              ? 'moved' : `error: note ${args.noteId} not found`
+            break
+          case 'search_notes': {
+            const found = await retrieveRelevantNotes(apiKey, String(args.query ?? ''), notes, 5)
+            result = found.length
+              ? found.map((n) => `id:${n.id} "${n.title}"\n${n.body.replace(/\s+/g, ' ').slice(0, 300)}`).join('\n---\n')
+              : 'no matching notes'
+            break
+          }
+          case 'save_preference': {
+            const pref = String(args.preference ?? '').trim()
+            if (pref) {
+              const existing = (await getSetting('ai-preferences').catch(() => '')) || ''
+              await putSetting('ai-preferences', existing ? `${existing}\n- ${pref}` : `- ${pref}`)
+              result = 'preference saved'
+            } else {
+              result = 'error: empty preference'
+            }
+            break
+          }
           default:
             result = `error: unknown tool ${call.name}`
         }

@@ -1,9 +1,10 @@
 ﻿const DB_NAME = 'chaboxer-notes'
-const DB_VERSION = 3
+const DB_VERSION = 4
 const STORE_NAME = 'notes'
 const FOLDER_STORE = 'folders'
 const CHAT_STORE = 'chat'
 const SETTINGS_STORE = 'settings'
+const EMBED_STORE = 'embeddings'
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -21,6 +22,9 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(SETTINGS_STORE)) {
         db.createObjectStore(SETTINGS_STORE, { keyPath: 'key' })
+      }
+      if (!db.objectStoreNames.contains(EMBED_STORE)) {
+        db.createObjectStore(EMBED_STORE, { keyPath: 'id' })
       }
     }
     request.onsuccess = () => resolve(request.result)
@@ -51,6 +55,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   createdAt: string
+  sessionId?: number // 0/undefined = legacy session
+  feedback?: 'approved' | 'rejected' // human-in-the-loop signal on AI edits
 }
 
 // Cloud sync hooks — registered by the cloud module when a user is signed in
@@ -162,6 +168,25 @@ export async function getChatHistory(): Promise<ChatMessage[]> {
   const msgs = await getAll<ChatMessage>(CHAT_STORE)
   msgs.sort((a, b) => a.id - b.id)
   return msgs
+}
+
+// RAG: cached note embeddings, keyed by note id; updatedAt marks staleness
+export interface NoteEmbedding {
+  id: number
+  updatedAt: string
+  vector: number[]
+}
+
+export function getAllEmbeddings(): Promise<NoteEmbedding[]> {
+  return getAll<NoteEmbedding>(EMBED_STORE)
+}
+
+export function putEmbedding(e: NoteEmbedding): Promise<void> {
+  return put(EMBED_STORE, e)
+}
+
+export function deleteEmbedding(id: number): Promise<void> {
+  return remove(EMBED_STORE, id)
 }
 
 export function putChatMessage(msg: ChatMessage): Promise<void> {

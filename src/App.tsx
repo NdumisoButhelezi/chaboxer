@@ -17,6 +17,30 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
 
+// Simple LCS line diff for the AI approval card
+function lineDiff(oldText: string, newText: string): { type: ' ' | '+' | '-'; line: string }[] {
+  const a = oldText.split('\n'), b = newText.split('\n')
+  const m = a.length, n = b.length
+  if (m * n > 250000) {
+    // too large for O(m*n) — show as full replace
+    return [...a.map((line) => ({ type: '-' as const, line })), ...b.map((line) => ({ type: '+' as const, line }))]
+  }
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0))
+  for (let i = m - 1; i >= 0; i--)
+    for (let j = n - 1; j >= 0; j--)
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+  const out: { type: ' ' | '+' | '-'; line: string }[] = []
+  let i = 0, j = 0
+  while (i < m && j < n) {
+    if (a[i] === b[j]) { out.push({ type: ' ', line: a[i] }); i++; j++ }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ type: '-', line: a[i] }); i++ }
+    else { out.push({ type: '+', line: b[j] }); j++ }
+  }
+  while (i < m) out.push({ type: '-', line: a[i++] })
+  while (j < n) out.push({ type: '+', line: b[j++] })
+  return out
+}
+
 const FileIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -63,11 +87,15 @@ function App() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [chatInput, setChatInput] = useState('')
   const [aiBusy, setAiBusy] = useState(false)
+  const [streamText, setStreamText] = useState('')
   // Agent mode: true = auto-apply AI edits, false = review each edit (human in the loop)
   const [agentMode, setAgentMode] = useState(false)
   const agentModeRef = useRef(agentMode)
   agentModeRef.current = agentMode
   const [pendingAction, setPendingAction] = useState<{ action: PendingAction; resolve: (ok: boolean) => void } | null>(null)
+  const [chatSession, setChatSession] = useState(0)
+  const chatSessionRef = useRef(chatSession)
+  chatSessionRef.current = chatSession
   const [apiKey, setApiKey] = useState('')
   const [keyInput, setKeyInput] = useState('')
   const chatEndRef = useRef<HTMLDivElement>(null)
@@ -205,7 +233,12 @@ function App() {
       })
     })
     getAllFolders().then((f) => setFolders((prev) => [...prev, ...f.filter((x) => !prev.some((p) => p.id === x.id))]))
-    getChatHistory().then(setChatMessages)
+    // Load only the current chat session; older sessions stay stored for context/learning
+    getSetting('chat-session-id').then((s) => {
+      const sess = s ? Number(s) : 0
+      setChatSession(sess)
+      getChatHistory().then((all) => setChatMessages(all.filter((m) => (m.sessionId ?? 0) === sess)))
+    })
     // Env-configured backend takes priority; fall back to the locally saved key
     const envKey = (import.meta.env.VITE_OPENAI_API_KEY as string | undefined) || ''
     const envBase = (import.meta.env.VITE_OPENAI_BASE_URL as string | undefined) || ''
@@ -260,7 +293,7 @@ function App() {
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [chatMessages, aiBusy, pendingAction])
+  }, [chatMessages, aiBusy, pendingAction, streamText])
 
   const today = () =>
     new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
@@ -826,6 +859,30 @@ ${renderMarkdown(body)}
       setMobileView('editor')
       return true
     },
+    deleteNote: (noteId) => {
+      const note = notesRef.current.find((n) => n.id === noteId && !n.deletedAt)
+      if (!note) return false
+      deleteNote(noteId)
+      return true
+    },
+    moveNote: (noteId, folderName) => {
+      const note = notesRef.current.find((n) => n.id === noteId)
+      if (!note) return false
+      let folderId: number | null = null
+      if (folderName) {
+        const existing = foldersRef.current.find((f) => f.name.toLowerCase() === folderName.toLowerCase())
+        if (existing) {
+          folderId = existing.id
+        } else {
+          const folder: Folder = { id: Date.now(), name: folderName, createdAt: new Date().toISOString() }
+          folderId = folder.id
+          setFolders((prev) => [...prev, folder].sort((a, b) => a.name.localeCompare(b.name)))
+          putFolder(folder)
+        }
+      }
+      moveNote(noteId, folderId)
+      return true
+    },
   }
 
   const saveApiKey = () => {
@@ -850,16 +907,38 @@ ${renderMarkdown(body)}
   }
 
   const resolvePending = (ok: boolean) => {
+    if (pendingAction) {
+      // Persist the human decision — context for future turns + reinforcement signal
+      const fb: ChatMessage = {
+        id: Date.now(), role: 'assistant',
+        content: `${ok ? '✓ Edit approved' : '✕ Edit rejected'}: ${pendingAction.action.title}`,
+        createdAt: new Date().toISOString(),
+        sessionId: chatSessionRef.current,
+        feedback: ok ? 'approved' : 'rejected',
+      }
+      setChatMessages((prev) => [...prev, fb])
+      putChatMessage(fb)
+    }
     pendingAction?.resolve(ok)
     setPendingAction(null)
   }
 
-  const sendChat = async () => {
-    const text = chatInput.trim()
+  // Start a fresh conversation; previous sessions remain stored in IndexedDB
+  const newChat = () => {
+    const id = Date.now()
+    setChatSession(id)
+    putSetting('chat-session-id', String(id))
+    setChatMessages([])
+    setPendingAction(null)
+  }
+
+  const sendChat = async (preset?: string) => {
+    const text = (preset ?? chatInput).trim()
     if (!text || aiBusy || !apiKey) return
     setChatInput('')
     const userMsg: ChatMessage = {
       id: Date.now(), role: 'user', content: text, createdAt: new Date().toISOString(),
+      sessionId: chatSessionRef.current,
     }
     setChatMessages((prev) => [...prev, userMsg])
     putChatMessage(userMsg)
@@ -869,9 +948,11 @@ ${renderMarkdown(body)}
       const reply = await runAI(
         apiKey, text, chatMessages, notesRef.current.filter((n) => !n.deletedAt), activeId, aiActions,
         requestApproval,
+        setStreamText,
       )
       const aiMsg: ChatMessage = {
         id: Date.now() + 1, role: 'assistant', content: reply, createdAt: new Date().toISOString(),
+        sessionId: chatSessionRef.current,
       }
       setChatMessages((prev) => [...prev, aiMsg])
       putChatMessage(aiMsg)
@@ -880,12 +961,19 @@ ${renderMarkdown(body)}
         id: Date.now() + 1, role: 'assistant',
         content: `Error: ${err instanceof Error ? err.message : String(err)}`,
         createdAt: new Date().toISOString(),
+        sessionId: chatSessionRef.current,
       }
       setChatMessages((prev) => [...prev, aiMsg])
+      putChatMessage(aiMsg)
     } finally {
       setAiBusy(false)
+      setStreamText('')
     }
   }
+
+  const sendBriefing = () => sendChat(
+    'Give me my briefing for today: summarize notes created or updated in the last 2 days, then list all open tasks (unchecked "- [ ]") across my notes grouped by note. Be concise.'
+  )
 
   const clearChat = () => {
     if (!window.confirm('Clear AI chat history (memory)?')) return
@@ -1372,6 +1460,8 @@ ${renderMarkdown(body)}
             >
               {agentMode ? '⚡ Agent' : '🛡 Review'}
             </button>
+            <button className="ai-panel-action" title="Daily briefing: recent notes + open tasks" onClick={sendBriefing} disabled={aiBusy || !apiKey}>☀</button>
+            <button className="ai-panel-action" title="Start a new chat (history is kept)" onClick={newChat}>New</button>
             <button className="ai-panel-action" title="Clear memory" onClick={clearChat}>Clear</button>
             <button className="ai-panel-action" title="Close" onClick={() => setChatOpen(false)}>✕</button>
           </div>
@@ -1415,14 +1505,28 @@ ${renderMarkdown(body)}
                 {pendingAction && (
                   <div className="ai-approval">
                     <div className="ai-approval-title">✋ AI wants to: {pendingAction.action.title}</div>
-                    <div className="ai-approval-preview md" dangerouslySetInnerHTML={{ __html: renderMarkdown(pendingAction.action.preview) }} />
+                    {pendingAction.action.oldPreview !== undefined ? (
+                      <pre className="ai-approval-preview ai-diff">
+                        {lineDiff(pendingAction.action.oldPreview, pendingAction.action.preview).map((d, i) => (
+                          <div key={i} className={d.type === '+' ? 'diff-add' : d.type === '-' ? 'diff-del' : 'diff-ctx'}>
+                            {d.type === ' ' ? '\u00a0\u00a0' : `${d.type} `}{d.line}
+                          </div>
+                        ))}
+                      </pre>
+                    ) : (
+                      <div className="ai-approval-preview md" dangerouslySetInnerHTML={{ __html: renderMarkdown(pendingAction.action.preview) }} />
+                    )}
                     <div className="ai-approval-actions">
                       <button className="ai-approve-btn" onClick={() => resolvePending(true)}>✓ Apply</button>
                       <button className="ai-reject-btn" onClick={() => resolvePending(false)}>✕ Reject</button>
                     </div>
                   </div>
                 )}
-                {aiBusy && !pendingAction && <div className="ai-msg assistant"><div className="ai-msg-body typing">Thinking&hellip;</div></div>}
+                {aiBusy && !pendingAction && (
+                  streamText
+                    ? <div className="ai-msg assistant"><div className="ai-msg-body md" dangerouslySetInnerHTML={{ __html: renderMarkdown(streamText) }} /></div>
+                    : <div className="ai-msg assistant"><div className="ai-msg-body typing">Thinking&hellip;</div></div>
+                )}
                 <div ref={chatEndRef} />
               </div>
               <div className="ai-input-row">
@@ -1436,7 +1540,7 @@ ${renderMarkdown(body)}
                   placeholder="Ask about your notes, or tell me to write one..."
                   rows={2}
                 />
-                <button className="ai-send-btn" onClick={sendChat} disabled={aiBusy || !chatInput.trim()}>
+                <button className="ai-send-btn" onClick={() => sendChat()} disabled={aiBusy || !chatInput.trim()}>
                   Send
                 </button>
               </div>
