@@ -1492,13 +1492,18 @@ ${renderMarkdown(body)}
               <div className="ai-messages">
                 {chatMessages.length === 0 && (
                   <div className="ai-hint">
-                    <p>Ask me anything about your notes:</p>
-                    <ul>
-                      <li>"Summarize my notes from this week"</li>
-                      <li>"Create a note with a workout plan"</li>
-                      <li>"Clean up and reformat the open note"</li>
-                      <li>"What did I write about project X?"</li>
-                    </ul>
+                    <p>Ask me anything about your notes — try one:</p>
+                    <div className="ai-suggestions">
+                      {[
+                        'Summarize my notes from this week',
+                        'Review all my notes and give feedback',
+                        'Clean up and reformat the open note',
+                      ].map((s) => (
+                        <button key={s} className="ai-suggestion-chip" onClick={() => sendChat(s)} disabled={aiBusy}>
+                          {s}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
                 {chatMessages.map((m) => (

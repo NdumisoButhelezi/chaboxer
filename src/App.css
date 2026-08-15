@@ -981,6 +981,37 @@
   animation: cursor-blink 1s steps(2) infinite;
 }
 
+/* First-run tappable example queries */
+.ai-suggestions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.ai-suggestion-chip {
+  background: rgba(167, 139, 250, 0.08);
+  border: 1px solid rgba(167, 139, 250, 0.3);
+  color: #c4b5fd;
+  font-size: 12.5px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.ai-suggestion-chip:hover:not(:disabled) {
+  background: rgba(167, 139, 250, 0.2);
+  transform: translateY(-1px);
+}
+
+.ai-suggestion-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 @keyframes cursor-blink {
   from { opacity: 1; }
   to { opacity: 0; }
