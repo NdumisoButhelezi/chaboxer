@@ -89,6 +89,12 @@ function App() {
   const [aiBusy, setAiBusy] = useState(false)
   const [streamText, setStreamText] = useState('')
   const [agentActivity, setAgentActivity] = useState<string[]>([])
+  // Voice: dictation into the chat input + optional spoken replies
+  const [listening, setListening] = useState(false)
+  const [speakReplies, setSpeakReplies] = useState(false)
+  const speakRef = useRef(speakReplies)
+  speakRef.current = speakReplies
+  const chatRecRef = useRef<{ stop(): void } | null>(null)
   // Agent mode: true = auto-apply AI edits, false = review each edit (human in the loop)
   const [agentMode, setAgentMode] = useState(false)
   const agentModeRef = useRef(agentMode)
@@ -252,6 +258,7 @@ function App() {
     getSetting('theme').then((t) => { if (t === 'light') setLightTheme(true) })
     getSetting('font-size').then((f) => { if (f === 's' || f === 'l') setFontSize(f) })
     getSetting('ai-agent-mode').then((v) => { if (v === 'on') setAgentMode(true) })
+    getSetting('ai-speak').then((v) => { if (v === 'on') setSpeakReplies(true) })
   }, [])
 
   // Firebase auth + realtime sync
@@ -1010,6 +1017,7 @@ ${renderMarkdown(noteBody)}
       }
       setChatMessages((prev) => [...prev, aiMsg])
       putChatMessage(aiMsg)
+      if (speakRef.current) speakText(reply)
     } catch (err) {
       const aiMsg: ChatMessage = {
         id: Date.now() + 1, role: 'assistant',
@@ -1034,6 +1042,57 @@ ${renderMarkdown(noteBody)}
     if (!window.confirm('Clear AI chat history (memory)?')) return
     setChatMessages([])
     clearChatHistory()
+  }
+
+  // Web Speech API dictation — appends the transcript to the chat input
+  const toggleMic = () => {
+    if (listening) {
+      chatRecRef.current?.stop()
+      return
+    }
+    type SR = { new (): { lang: string; interimResults: boolean; continuous: boolean; onresult: (e: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }>; resultIndex: number }) => void; onend: () => void; onerror: () => void; start(): void; stop(): void } }
+    const Ctor = (window as unknown as { SpeechRecognition?: SR; webkitSpeechRecognition?: SR }).SpeechRecognition
+      ?? (window as unknown as { webkitSpeechRecognition?: SR }).webkitSpeechRecognition
+    if (!Ctor) { window.alert('Voice input is not supported in this browser.'); return }
+    const rec = new Ctor()
+    rec.lang = navigator.language || 'en-US'
+    rec.interimResults = false
+    rec.continuous = true
+    rec.onresult = (e) => {
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) {
+          const t = e.results[i][0].transcript.trim()
+          if (t) setChatInput((prev) => (prev ? `${prev} ${t}` : t))
+        }
+      }
+    }
+    rec.onend = () => { setListening(false); chatRecRef.current = null }
+    rec.onerror = () => { setListening(false); chatRecRef.current = null }
+    chatRecRef.current = rec
+    setListening(true)
+    rec.start()
+  }
+
+  const speakText = (md: string) => {
+    if (!('speechSynthesis' in window)) return
+    // Strip markdown/links so TTS reads clean prose
+    const plain = md
+      .replace(/\[\[\d+\|([^\]]+)\]\]/g, '$1')
+      .replace(/\[\[([^\]]+)\]\]/g, '$1')
+      .replace(/[#*_`>~=|-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!plain) return
+    window.speechSynthesis.cancel()
+    window.speechSynthesis.speak(new SpeechSynthesisUtterance(plain.slice(0, 1200)))
+  }
+
+  const toggleSpeak = () => {
+    setSpeakReplies((prev) => {
+      if (prev) window.speechSynthesis?.cancel()
+      putSetting('ai-speak', prev ? 'off' : 'on')
+      return !prev
+    })
   }
 
   const renderNoteItem = (note: Note) => (
@@ -1525,6 +1584,7 @@ ${renderMarkdown(noteBody)}
             >
               {agentMode ? '⚡ Agent' : '🛡 Review'}
             </button>
+            <button className={`ai-panel-action ${speakReplies ? 'speak-on' : ''}`} title={speakReplies ? 'Spoken replies on — click to mute' : 'Read replies aloud'} onClick={toggleSpeak}>🔊</button>
             <button className="ai-panel-action" title="Undo last AI edit" onClick={undoLastAiEdit}>↶</button>
             <button className="ai-panel-action" title="Daily briefing: recent notes + open tasks" onClick={sendBriefing} disabled={aiBusy || !apiKey}>☀</button>
             <button className="ai-panel-action" title="Start a new chat (history is kept)" onClick={newChat}>New</button>
@@ -1631,6 +1691,11 @@ ${renderMarkdown(noteBody)}
                 <div ref={chatEndRef} />
               </div>
               <div className="ai-input-row">
+                <button
+                  className={`ai-mic-btn ${listening ? 'listening' : ''}`}
+                  title={listening ? 'Stop dictation' : 'Dictate with your voice'}
+                  onClick={toggleMic}
+                >🎤</button>
                 <textarea
                   className="ai-input"
                   value={chatInput}

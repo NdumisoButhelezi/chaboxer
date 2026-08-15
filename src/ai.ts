@@ -33,11 +33,13 @@ export const envApiKey = (import.meta.env.VITE_OPENAI_API_KEY as string | undefi
 const envModel = (import.meta.env.VITE_OPENAI_MODEL as string | undefined) || 'gpt-4o-mini'
 const envBaseURL = (import.meta.env.VITE_OPENAI_BASE_URL as string | undefined) || undefined
 const envEmbedModel = (import.meta.env.VITE_OPENAI_EMBED_MODEL as string | undefined) || 'text-embedding-3-small'
+// Cheap model for lightweight jobs (tagging); falls back to the main model
+const envTagModel = (import.meta.env.VITE_OPENAI_TAG_MODEL as string | undefined) || ''
 
-export function createLLM(apiKey: string) {
+export function createLLM(apiKey: string, model = envModel) {
   return new ChatOpenAI({
     apiKey: envApiKey || apiKey || 'not-needed', // local backends often ignore the key
-    model: envModel,
+    model,
     temperature: 0.4,
     ...(envBaseURL ? { configuration: { baseURL: envBaseURL } } : {}),
   })
@@ -295,7 +297,7 @@ export async function suggestTags(
   note: Note,
   allTitles: string[],
 ): Promise<string> {
-  const model = createLLM(apiKey)
+  const model = createLLM(apiKey, envTagModel || envModel)
   const res = await model.invoke([
     new SystemMessage(
       `You tag markdown notes. Reply with ONE line only: 2-5 relevant #tags (lowercase, hyphenated) and, if any of these existing note titles are strongly related, [[wikilinks]] to them: ${allTitles.join(', ')}. No explanations.`
