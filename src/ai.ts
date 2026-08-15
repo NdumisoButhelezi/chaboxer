@@ -183,6 +183,20 @@ const TOOLS = [
   {
     type: 'function' as const,
     function: {
+      name: 'read_note',
+      description: 'Read the FULL content of any note by id. Use this to scan/review notes before giving feedback or editing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          noteId: { type: 'number', description: 'Id of the note to read' },
+        },
+        required: ['noteId'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
       name: 'search_notes',
       description: 'Semantic search across all notes. Returns the most relevant notes with snippets. Use when the note index preview is not enough.',
       parameters: {
@@ -230,12 +244,23 @@ function buildSystemPrompt(notes: Note[], activeId: number | null, retrieved: No
 Today's date: ${new Date().toISOString().slice(0, 10)}.
 
 You can read all the user's notes, summarize and analyse them, and take actions with tools:
-create_note, append_to_note, replace_note_body, open_note, delete_note, move_note, search_notes, save_preference.
+create_note, append_to_note, replace_note_body, open_note, delete_note, move_note, read_note, search_notes, save_preference.
+
+APP GUIDE (what this software can do — use it fully and teach the user):
+- Notes are markdown: # headings, **bold**, *italic*, - lists, - [ ] task checkboxes, > quotes, ==highlight==, tables, \`code\`.
+- [[Note Title]] creates a clickable wikilink to another note; clicking opens (or creates) it. #tags work anywhere.
+- Notes can be organised into folders (drag & drop), pinned, and soft-deleted to a 30-day trash.
+- A graph view visualises connections between notes, tags and folders — wikilinks and tags build the graph.
+- There is a daily-journal note per day, cloud sync via Google sign-in, offline PWA install, and export to markdown.
+- Keyboard: Ctrl+B bold, Ctrl+I italic, Ctrl+E code, Ctrl+S save.
 
 Rules:
 - When the user asks you to write/save/take notes, use the tools — don't just answer in chat.
 - After creating or editing a note, call open_note so the user sees it.
 - Write note bodies in rich markdown (headings, lists, tasks, **bold**, tables where useful).
+- Use [[wikilinks]] and #tags in note bodies to connect related notes — this powers the graph view.
+- In CHAT replies, whenever you mention a note, write its title as [[Note Title]] — the user can click it to jump there.
+- When asked to review/give feedback on notes, call read_note on each relevant note first so feedback is grounded in full content, then reference each note with [[wikilinks]].
 - When summarizing chats or notes, be concise and structured.
 - Dates matter: notes carry created/updated dates; use them when the user asks about "recent", "today", "this week", etc.
 - If the user rejects one of your edits, call save_preference with what you learned, then adjust.
@@ -330,9 +355,9 @@ export async function runAI(
           const target = notes.find((n) => n.id === Number(args.noteId))
           const pending: PendingAction =
             call.name === 'create_note'
-              ? { tool: call.name, title: `Create note "${String(args.title ?? 'Untitled')}"${args.folderName ? ` in folder "${args.folderName}"` : ''}`, preview: String(args.body ?? '') }
+              ? { tool: call.name, title: `Create note "${String(args.title ?? 'Untitled')}"${args.folderName ? ` in folder "${args.folderName}"` : ''}`, preview: String(args.body ?? ''), oldPreview: '' }
               : call.name === 'append_to_note'
-                ? { tool: call.name, title: `Append to "${target?.title ?? `note ${args.noteId}`}"`, preview: String(args.text ?? '') }
+                ? { tool: call.name, title: `Append to "${target?.title ?? `note ${args.noteId}`}"`, preview: target?.body ? `${target.body}\n\n${String(args.text ?? '')}` : String(args.text ?? ''), oldPreview: target?.body ?? '' }
                 : call.name === 'delete_note'
                   ? { tool: call.name, title: `Delete "${target?.title ?? `note ${args.noteId}`}" (moves to trash)`, preview: target?.body.slice(0, 500) ?? '' }
                   : { tool: call.name, title: `Rewrite "${target?.title ?? `note ${args.noteId}`}"`, preview: String(args.body ?? ''), oldPreview: target?.body ?? '' }
@@ -373,6 +398,13 @@ export async function runAI(
             result = actions.moveNote(Number(args.noteId), args.folderName ? String(args.folderName) : null)
               ? 'moved' : `error: note ${args.noteId} not found`
             break
+          case 'read_note': {
+            const note = notes.find((n) => n.id === Number(args.noteId))
+            result = note
+              ? `"${note.title}" (created ${note.createdAt.slice(0, 10)}, updated ${note.updatedAt.slice(0, 10)}):\n\n${note.body || '(empty)'}`
+              : `error: note ${args.noteId} not found`
+            break
+          }
           case 'search_notes': {
             const found = await retrieveRelevantNotes(apiKey, String(args.query ?? ''), notes, 5)
             result = found.length
@@ -403,7 +435,8 @@ export async function runAI(
           create_note: 'Creating note', append_to_note: 'Appending to note',
           replace_note_body: 'Rewriting note', open_note: 'Opening note',
           delete_note: 'Deleting note', move_note: 'Moving note',
-          search_notes: 'Searching notes', save_preference: 'Saving preference',
+          read_note: 'Reading note', search_notes: 'Searching notes',
+          save_preference: 'Saving preference',
         }
         const failed = result.startsWith('error')
         onProgress(`${failed ? '\u26a0' : '\u2713'} ${friendly[call.name] ?? call.name}${failed ? ` — ${result}` : ''}`)

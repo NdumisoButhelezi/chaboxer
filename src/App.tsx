@@ -1510,7 +1510,7 @@ ${renderMarkdown(body)}
                       {m.role === 'user' ? 'You' : 'AI'} &middot; {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </div>
                     {m.role === 'assistant'
-                      ? <div className="ai-msg-body md" dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
+                      ? <div className="ai-msg-body md" onClick={handlePreviewClick} dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />
                       : <div className="ai-msg-body">{m.content}</div>}
                   </div>
                   )
