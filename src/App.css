@@ -9,6 +9,49 @@
   padding-bottom: env(safe-area-inset-bottom, 0px);
   padding-left: env(safe-area-inset-left, 0px);
   padding-right: env(safe-area-inset-right, 0px);
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Buttons don't inherit the app font by default */
+.app button {
+  font-family: inherit;
+}
+
+/* Keyboard focus ring (mouse/touch stay clean) */
+.app button:focus-visible,
+.app input:focus-visible,
+.app textarea:focus-visible {
+  outline: 2px solid rgba(96, 165, 250, 0.6);
+  outline-offset: 1px;
+}
+
+::selection {
+  background: rgba(96, 165, 250, 0.35);
+  color: #f1f5f9;
+}
+
+/* Thin, subtle scrollbars */
+.app * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
+}
+
+.app *::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.app *::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 4px;
+}
+
+.app *::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.4);
+}
+
+.app *::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* Sidebar */
@@ -114,11 +157,12 @@
   align-items: center;
   gap: 8px;
   padding: 5px 8px;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
   margin-bottom: 1px;
   transition: background 0.08s;
   min-height: 30px;
+  border-left: 2px solid transparent;
 }
 
 .note-item:hover {
@@ -127,6 +171,11 @@
 
 .note-item.active {
   background: rgba(96, 165, 250, 0.15);
+  border-left-color: #60a5fa;
+}
+
+.note-item.active .note-item-icon {
+  color: #60a5fa;
 }
 
 .note-item-icon {
@@ -272,21 +321,32 @@
   background: rgba(148, 163, 184, 0.1);
 }
 
+/* Mobile bottom navigation (hidden on desktop) */
+.mobile-nav {
+  display: none;
+}
+
 /* Mobile Responsive */
 @media (max-width: 640px) {
   .app {
     flex-direction: column;
+    height: 100dvh; /* tracks the visual viewport so the keyboard doesn't hide the UI */
   }
 
   .sidebar {
     width: 100%;
-    height: 100%;
+    height: auto;
+    flex: 1;
+    flex-shrink: 1;
+    min-height: 0;
     border-right: none;
   }
 
   .editor {
     width: 100%;
-    height: 100%;
+    height: auto;
+    flex: 1;
+    min-height: 0;
   }
 
   .mobile-show {
@@ -299,6 +359,105 @@
 
   .back-btn {
     display: flex;
+  }
+
+  /* Bottom tab bar */
+  .mobile-nav {
+    display: flex;
+    flex-shrink: 0;
+    height: calc(54px + env(safe-area-inset-bottom, 0px));
+    background: #1e293b;
+    border-top: 1px solid rgba(148, 163, 184, 0.15);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    z-index: 60;
+  }
+
+  .mobile-nav button {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    background: none;
+    border: none;
+    color: #64748b;
+    font-size: 10px;
+    font-weight: 500;
+    padding: 8px 0 6px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-nav button.active {
+    color: #60a5fa;
+  }
+
+  .mobile-nav button.ai.active,
+  .mobile-nav button.ai:active {
+    color: #a78bfa;
+  }
+
+  .mobile-nav-spark {
+    font-size: 19px;
+    line-height: 20px;
+  }
+
+  .mobile-nav-new {
+    color: #93c5fd !important;
+  }
+
+  .mobile-nav-new svg {
+    background: rgba(96, 165, 250, 0.15);
+    border: 1px solid rgba(96, 165, 250, 0.35);
+    border-radius: 50%;
+    padding: 3px;
+  }
+
+  /* Compact 2-column action grid instead of a long button stack */
+  .sidebar-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+
+  .sidebar-actions .new-page-btn {
+    padding: 10px 8px;
+    font-size: 13px;
+    justify-content: center;
+  }
+
+  .sidebar-actions .template-wrap,
+  .sidebar-actions .settings-row,
+  .sidebar-actions .install-btn {
+    grid-column: 1 / -1;
+  }
+
+  .template-wrap .new-page-btn {
+    width: 100%;
+  }
+
+  .setting-chip {
+    padding: 9px 4px;
+    font-size: 12px;
+  }
+
+  /* Bigger tap targets in lists */
+  .note-item {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  .folder-row {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  .folder-action,
+  .pin-btn,
+  .delete-btn {
+    min-width: 34px;
+    min-height: 34px;
   }
 
   .editor-topbar {
@@ -315,8 +474,13 @@
   }
 
   .editor-body {
-    font-size: 15px;
+    font-size: 16px; /* prevents iOS zoom-on-focus */
     padding-bottom: 24px;
+  }
+
+  .search-input,
+  .folder-rename-input {
+    font-size: 16px;
   }
 
   .delete-btn {
@@ -326,6 +490,11 @@
   .format-toolbar {
     overflow-x: auto;
     scrollbar-width: none;
+  }
+
+  .format-toolbar button {
+    min-width: 34px;
+    min-height: 34px;
   }
 }
 
@@ -634,7 +803,7 @@
 
 /* AI Panel */
 .ai-panel {
-  width: 340px;
+  width: clamp(320px, 28vw, 400px);
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -720,6 +889,15 @@
   letter-spacing: 0.05em;
 }
 
+.ai-msg {
+  animation: msg-in 0.18s ease;
+}
+
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
 .ai-msg-body {
   font-size: 13px;
   line-height: 1.6;
@@ -789,6 +967,7 @@
   padding: 8px 14px;
   border-radius: 8px;
   cursor: pointer;
+  transition: background 0.15s;
 }
 
 .ai-send-btn:hover:not(:disabled) {
@@ -1240,6 +1419,11 @@
   padding: 8px 16px;
   border-radius: 8px;
   cursor: pointer;
+  transition: background 0.15s;
+}
+
+.ai-open-btn:hover {
+  background: rgba(167, 139, 250, 0.25);
 }
 
 /* Account / cloud sync */
@@ -1434,10 +1618,16 @@
   border-radius: 12px;
   width: 100%;
   max-width: 520px;
-  max-height: 80vh;
+  max-height: 80dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  animation: modal-in 0.15s ease;
+}
+
+@keyframes modal-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: none; }
 }
 
 .help-header {
@@ -1786,32 +1976,75 @@
     position: fixed;
     inset: 0;
     width: 100%;
+    height: 100dvh;
     z-index: 50;
     padding-top: env(safe-area-inset-top, 0px);
     padding-bottom: env(safe-area-inset-bottom, 0px);
+    border-left: none;
+  }
+
+  .ai-panel-header {
+    padding: 14px 12px;
+  }
+
+  .ai-panel-title {
+    font-size: 15px;
   }
 
   /* Bigger touch targets */
   .ai-panel-action {
-    font-size: 14px;
-    padding: 8px 10px;
+    font-size: 15px;
+    padding: 10px 12px;
   }
 
   .ai-mode-seg button {
     font-size: 13px;
-    padding: 8px 14px;
+    padding: 10px 16px;
   }
 
   .ai-approve-btn,
   .ai-reject-btn,
   .ai-edit-btn,
   .ai-always-btn {
-    padding: 10px 16px;
+    padding: 12px 16px;
+    font-size: 14px;
   }
 
   .ai-overflow-menu button {
-    padding: 12px 14px;
+    padding: 13px 14px;
+    font-size: 15px;
+  }
+
+  .ai-suggestion-chip {
+    padding: 10px 14px;
     font-size: 14px;
+  }
+
+  .ai-msg-body {
+    font-size: 15px;
+    padding: 10px 14px;
+  }
+
+  .ai-messages {
+    padding: 14px;
+    gap: 14px;
+  }
+
+  /* Sticky composer with comfortable targets */
+  .ai-input-row {
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+    background: #1e293b;
+  }
+
+  .ai-mic-btn {
+    min-width: 44px;
+    min-height: 44px;
+    font-size: 18px;
+  }
+
+  .ai-send-btn {
+    padding: 12px 18px;
+    font-size: 15px;
   }
 
   /* No hover on touch — keep per-note actions reachable */
@@ -1841,4 +2074,33 @@
   scroll-behavior: smooth;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+}
+
+/* Phone-only: AI panel sits above the bottom tab bar so you can switch views while chatting */
+@media (max-width: 640px) {
+  .ai-panel {
+    height: auto;
+    bottom: calc(54px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: 0;
+  }
+
+  .ai-input-row {
+    padding-bottom: 10px;
+  }
+
+  .help-overlay {
+    z-index: 70;
+  }
+}
+
+/* Respect users who prefer less motion */
+@media (prefers-reduced-motion: reduce) {
+  .app *,
+  .app *::before,
+  .app *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

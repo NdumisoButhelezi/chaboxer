@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useCallback, useRef } from 'react'
+﻿import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   getAllNotes, putNote, deleteNoteDB,
   getAllFolders, putFolder, deleteFolderDB,
@@ -457,6 +457,28 @@ function App() {
     setMobileView('list')
   }
 
+  // Close the open note: save it, then return to the note list / empty state
+  const closeNote = () => {
+    save()
+    setActiveId(null)
+    setTitle('')
+    setBody('')
+    setPreview(false)
+    setMobileView('list')
+  }
+
+  // Escape closes things in priority order: help modal → AI chat → open note
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || slashMenu || renamingFolder !== null || pendingAction) return
+      if (showHelp) setShowHelp(false)
+      else if (chatOpen) setChatOpen(false)
+      else if (activeId !== null) closeNote()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
   const save = useCallback(() => {
     if (activeId === null) return
     setNotes((prev) =>
@@ -806,22 +828,32 @@ ${renderMarkdown(noteBody)}
   }
 
   const q = search.trim().toLowerCase()
-  const liveNotes = notes.filter((n) => !n.deletedAt)
-  const trashedNotes = notes.filter((n) => n.deletedAt)
-  const searched = q
-    ? liveNotes.filter((n) => n.title.toLowerCase().includes(q) || n.body.toLowerCase().includes(q))
-    : liveNotes
-  const visibleNotes = [...searched].sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false) || b.id - a.id)
-  const rootNotes = visibleNotes.filter((n) => n.folderId === null)
+  // Memoized: these scan every note body, so don't redo it on each editor keystroke
+  const liveNotes = useMemo(() => notes.filter((n) => !n.deletedAt), [notes])
+  const trashedNotes = useMemo(() => notes.filter((n) => n.deletedAt), [notes])
+  const visibleNotes = useMemo(() => {
+    const searched = q
+      ? liveNotes.filter((n) => n.title.toLowerCase().includes(q) || n.body.toLowerCase().includes(q))
+      : liveNotes
+    return [...searched].sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false) || b.id - a.id)
+  }, [liveNotes, q])
+  const rootNotes = useMemo(() => visibleNotes.filter((n) => n.folderId === null), [visibleNotes])
 
   // Backlinks: live notes whose body wikilinks to the open note's title
-  const backlinks = activeNote
-    ? liveNotes.filter(
-        (n) => n.id !== activeNote.id && n.body.toLowerCase().includes(`[[${activeNote.title.toLowerCase()}]]`)
-      )
-    : []
+  const backlinks = useMemo(() => {
+    if (!activeNote) return []
+    const needle = `[[${activeNote.title.toLowerCase()}]]`
+    return liveNotes.filter((n) => n.id !== activeNote.id && n.body.toLowerCase().includes(needle))
+  }, [liveNotes, activeNote])
 
   const wordCount = body.trim() ? body.trim().split(/\s+/).length : 0
+
+  // Memoized: LCS diff is O(m·n), don't recompute while the approval card is on screen
+  const approvalDiff = useMemo(() => (
+    pendingAction && pendingAction.action.oldPreview !== undefined
+      ? lineDiff(pendingAction.action.oldPreview, pendingAction.action.preview)
+      : null
+  ), [pendingAction])
 
   const fmtDate = (iso: string) =>
     new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
@@ -1153,7 +1185,8 @@ ${renderMarkdown(noteBody)}
     <div
       key={note.id}
       className={`note-item ${note.id === activeId ? 'active' : ''}`}
-      onClick={() => selectNote(note)}
+      onClick={() => (note.id === activeId ? closeNote() : selectNote(note))}
+      title={note.id === activeId ? 'Click to close' : undefined}
       draggable
       onDragStart={(ev) => ev.dataTransfer.setData('text/note-id', String(note.id))}
     >
@@ -1558,6 +1591,7 @@ ${renderMarkdown(noteBody)}
                 >
                   ✦ AI
                 </button>
+                <button title="Close note" className="close-note-btn" onClick={closeNote}>✕</button>
               </div>
             </div>
             <div className="editor-content">
@@ -1748,9 +1782,9 @@ ${renderMarkdown(noteBody)}
                         onChange={(e) => setApprovalDraft(e.target.value)}
                         rows={10}
                       />
-                    ) : pendingAction.action.oldPreview !== undefined ? (
+                    ) : approvalDiff ? (
                       <pre className="ai-approval-preview ai-diff">
-                        {lineDiff(pendingAction.action.oldPreview, pendingAction.action.preview).map((d, i) => (
+                        {approvalDiff.map((d, i) => (
                           <div key={i} className={d.type === '+' ? 'diff-add' : d.type === '-' ? 'diff-del' : 'diff-ctx'}>
                             {d.type === ' ' ? '\u00a0\u00a0' : `${d.type} `}{d.line}
                           </div>
@@ -1805,6 +1839,55 @@ ${renderMarkdown(noteBody)}
           )}
         </aside>
       )}
+
+      {/* Mobile bottom navigation */}
+      <nav className="mobile-nav">
+        <button
+          className={!chatOpen && mobileView === 'list' ? 'active' : ''}
+          onClick={() => { save(); setChatOpen(false); setShowGraph(false); setMobileView('list') }}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+          </svg>
+          <span>Notes</span>
+        </button>
+        <button
+          className={!chatOpen && mobileView === 'editor' ? 'active' : ''}
+          onClick={() => { setChatOpen(false); setMobileView('editor') }}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+          </svg>
+          <span>Editor</span>
+        </button>
+        <button className="mobile-nav-new" onClick={() => { setChatOpen(false); addNote() }}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+          <span>New</span>
+        </button>
+        <button
+          className={!chatOpen && showGraph ? 'active' : ''}
+          onClick={() => { save(); setChatOpen(false); setShowGraph(true); setMobileView('editor') }}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="5" cy="6" r="2.5" />
+            <circle cx="19" cy="6" r="2.5" />
+            <circle cx="12" cy="18" r="2.5" />
+            <line x1="7" y1="7.5" x2="10.5" y2="16" />
+            <line x1="17" y1="7.5" x2="13.5" y2="16" />
+            <line x1="7.5" y1="6" x2="16.5" y2="6" />
+          </svg>
+          <span>Graph</span>
+        </button>
+        <button className={chatOpen ? 'active ai' : 'ai'} onClick={() => setChatOpen(!chatOpen)}>
+          <span className="mobile-nav-spark">✦</span>
+          <span>AI</span>
+        </button>
+      </nav>
 
       {/* Help modal */}
       {showHelp && (
