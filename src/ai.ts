@@ -3,6 +3,7 @@ import {
   SystemMessage, HumanMessage, AIMessage, ToolMessage,
   type BaseMessage, type AIMessageChunk,
 } from '@langchain/core/messages'
+import { Annotation, END, START, StateGraph } from '@langchain/langgraph'
 import type { Note, ChatMessage } from './db'
 import { getAllEmbeddings, putEmbedding, getSetting, putSetting, putEditLog, type NoteEmbedding } from './db'
 
@@ -30,13 +31,13 @@ export type ApprovalGate = (action: PendingAction) => Promise<ApprovalDecision>
 // LLM backend config — env wins over the key passed from the UI.
 // Base URL lets you target any OpenAI-compatible server (Azure, Ollama, vLLM, OpenRouter...).
 export const envApiKey = (import.meta.env.VITE_OPENAI_API_KEY as string | undefined) || ''
-const envModel = (import.meta.env.VITE_OPENAI_MODEL as string | undefined) || 'gpt-4o-mini'
+export const defaultAIModel = (import.meta.env.VITE_OPENAI_MODEL as string | undefined) || 'stealth/ox-alpha'
 const envBaseURL = (import.meta.env.VITE_OPENAI_BASE_URL as string | undefined) || undefined
 const envEmbedModel = (import.meta.env.VITE_OPENAI_EMBED_MODEL as string | undefined) || 'text-embedding-3-small'
 // Cheap model for lightweight jobs (tagging); falls back to the main model
 const envTagModel = (import.meta.env.VITE_OPENAI_TAG_MODEL as string | undefined) || ''
 
-export function createLLM(apiKey: string, model = envModel) {
+export function createLLM(apiKey: string, model = defaultAIModel) {
   return new ChatOpenAI({
     apiKey: envApiKey || apiKey || 'not-needed', // local backends often ignore the key
     model,
@@ -287,8 +288,100 @@ ${preferences ? `\nLEARNED USER PREFERENCES (follow these):\n${preferences}\n` :
 
 NOTE INDEX (${notes.length} notes):
 ${index || '(no notes yet)'}
+${buildGraphAnalysisContext(notes)}
 ${ragSection}
 ${active ? `FULL CONTENT OF CURRENTLY OPEN NOTE (id:${active.id}, "${active.title}"):\n${active.body || '(empty)'}` : ''}`
+}
+
+/** Supplies the AI with graph data rather than asking it to infer relationships
+ * from the visual SVG. */
+function buildGraphAnalysisContext(notes: Note[]): string {
+  if (notes.length === 0) return '\nGRAPH SNAPSHOT: the vault is empty.\n'
+
+  const byTitle = new Map(notes.map((note) => [note.title.trim().toLowerCase(), note]))
+  const degree = new Map(notes.map((note) => [note.id, 0]))
+  const links: string[] = []
+  const tags = new Map<string, string[]>()
+  const unresolved = new Set<string>()
+
+  for (const note of notes) {
+    for (const match of note.body.matchAll(/\[\[([^\]]+)\]\]/g)) {
+      const label = match[1].trim()
+      const target = byTitle.get(label.toLowerCase())
+      if (!target || target.id === note.id) {
+        if (!target) unresolved.add(label)
+        continue
+      }
+      degree.set(note.id, (degree.get(note.id) ?? 0) + 1)
+      degree.set(target.id, (degree.get(target.id) ?? 0) + 1)
+      links.push(`[[${note.id}|${note.title}]] → [[${target.id}|${target.title}]]`)
+    }
+    for (const match of note.body.matchAll(/(^|\s)#([\w-]+)/g)) {
+      const tag = `#${match[2].toLowerCase()}`
+      tags.set(tag, [...(tags.get(tag) ?? []), `[[${note.id}|${note.title}]]`])
+    }
+  }
+
+  const isolated = notes.filter((note) => (degree.get(note.id) ?? 0) === 0).map((note) => `[[${note.id}|${note.title}]]`)
+  const hubs = [...degree.entries()]
+    .filter(([, count]) => count > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([id, count]) => {
+      const note = notes.find((item) => item.id === id)!
+      return `[[${id}|${note.title}]] (${count})`
+    })
+  const tagGroups = [...tags.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .slice(0, 12)
+    .map(([tag, members]) => `${tag}: ${members.join(', ')}`)
+
+  return `\nGRAPH SNAPSHOT (derived from wikilinks and tags; use it whenever asked about relationships or graph health):
+- ${notes.length} note nodes, ${links.length} resolved wikilink edges, ${tags.size} tag hubs.
+- Most connected notes: ${hubs.join(', ') || 'none'}.
+- Isolated notes: ${isolated.join(', ') || 'none'}.
+- Unresolved wikilinks: ${[...unresolved].map((label) => `[[${label}]]`).join(', ') || 'none'}.
+- Wikilink edges: ${links.join('; ') || 'none'}.
+- Tag clusters: ${tagGroups.join('; ') || 'none'}.
+For a graph analysis, explain clusters, hubs, isolated notes, unresolved links, and 2–5 concrete linking/tagging improvements. Do not invent edges not listed here.\n`
+}
+
+const GraphAnalysisState = Annotation.Root({
+  snapshot: Annotation<string>,
+  report: Annotation<string>,
+})
+
+/**
+ * A dedicated LangGraph workflow for the graph view. Separating map → reason
+ * means the model always receives computed graph facts, not a guess based on
+ * note prose or on the SVG layout.
+ */
+export async function runGraphAnalysis(
+  apiKey: string,
+  notes: Note[],
+  model = defaultAIModel,
+  onProgress?: (activity: string) => void,
+): Promise<string> {
+  const workflow = new StateGraph(GraphAnalysisState)
+    .addNode('map_graph', () => {
+      onProgress?.('Mapping links, tags, and disconnected notes')
+      return { snapshot: buildGraphAnalysisContext(notes) }
+    })
+    .addNode('reason_about_graph', async (state) => {
+      onProgress?.('Ox Alpha is analyzing the graph')
+      const response = await createLLM(apiKey, model).invoke([
+        new SystemMessage('You are a knowledge-graph analyst for a markdown vault. Use only the supplied graph snapshot. Give a concise, useful report with: clusters, hubs, isolated notes, unresolved links, and 2–5 highest-value improvements. Reference notes only with the [[id|Title]] syntax present in the snapshot. Do not claim to have changed notes.'),
+        new HumanMessage(state.snapshot),
+      ])
+      return { report: typeof response.content === 'string' ? response.content : JSON.stringify(response.content) }
+    })
+    .addEdge(START, 'map_graph')
+    .addEdge('map_graph', 'reason_about_graph')
+    .addEdge('reason_about_graph', END)
+    .compile()
+
+  const result = await workflow.invoke({ snapshot: '', report: '' })
+  return result.report
 }
 
 // Ask the LLM for tags and wikilinks for one note
@@ -296,8 +389,9 @@ export async function suggestTags(
   apiKey: string,
   note: Note,
   allTitles: string[],
+  selectedModel = defaultAIModel,
 ): Promise<string> {
-  const model = createLLM(apiKey, envTagModel || envModel)
+  const model = createLLM(apiKey, envTagModel || selectedModel)
   const res = await model.invoke([
     new SystemMessage(
       `You tag markdown notes. Reply with ONE line only: 2-5 relevant #tags (lowercase, hyphenated) and, if any of these existing note titles are strongly related, [[wikilinks]] to them: ${allTitles.join(', ')}. No explanations.`
@@ -317,8 +411,9 @@ export async function runAI(
   requestApproval?: ApprovalGate, // undefined = agent mode (auto-apply)
   onToken?: (text: string) => void, // streaming: called with the answer-so-far
   onProgress?: (activity: string) => void, // live tool activity for the UI
+  selectedModel = defaultAIModel,
 ): Promise<string> {
-  const model = createLLM(apiKey).bindTools(TOOLS)
+  const model = createLLM(apiKey, selectedModel).bindTools(TOOLS)
 
   const preferences = (await getSetting('ai-preferences').catch(() => '')) || ''
 

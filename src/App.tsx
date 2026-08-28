@@ -17,6 +17,8 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
 
+const DEFAULT_AI_MODEL = (import.meta.env.VITE_OPENAI_MODEL as string | undefined) || 'stealth/ox-alpha'
+
 // Simple LCS line diff for the AI approval card
 function lineDiff(oldText: string, newText: string): { type: ' ' | '+' | '-'; line: string }[] {
   const a = oldText.split('\n'), b = newText.split('\n')
@@ -79,6 +81,10 @@ function App() {
   const [tagBusy, setTagBusy] = useState(false)
   const recognitionRef = useRef<{ stop(): void } | null>(null)
   const [mobileView, setMobileView] = useState<'list' | 'editor'>('list')
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarWidth, setSidebarWidth] = useState(300)
+  const [resizingSidebar, setResizingSidebar] = useState(false)
+  const [openTabs, setOpenTabs] = useState<number[]>([])
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
   const bodyRef = useRef<HTMLTextAreaElement>(null)
 
@@ -109,6 +115,7 @@ function App() {
   chatSessionRef.current = chatSession
   const [apiKey, setApiKey] = useState('')
   const [keyInput, setKeyInput] = useState('')
+  const [aiModel, setAiModel] = useState(DEFAULT_AI_MODEL)
   const chatEndRef = useRef<HTMLDivElement>(null)
   const notesRef = useRef<Note[]>([])
   const foldersRef = useRef<Folder[]>([])
@@ -121,6 +128,8 @@ function App() {
   const [syncing, setSyncing] = useState(false)
 
   const activeNote = notes.find((n) => n.id === activeId)
+  // Google returns the full display name; use the familiar first name in the sidebar.
+  const notesOwner = user?.displayName?.trim().split(/\s+/)[0] || 'My'
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -250,18 +259,25 @@ function App() {
       setChatSession(sess)
       getChatHistory().then((all) => setChatMessages(all.filter((m) => (m.sessionId ?? 0) === sess)))
     })
-    // Env-configured backend takes priority; fall back to the locally saved key
+    // Local servers such as Ollama need no key. Hosted endpoints (including
+    // OpenRouter) still need the user's API key, so keep the setup visible.
     const envKey = (import.meta.env.VITE_OPENAI_API_KEY as string | undefined) || ''
     const envBase = (import.meta.env.VITE_OPENAI_BASE_URL as string | undefined) || ''
-    if (envKey || envBase) {
+    const localBackend = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(envBase)
+    if (envKey || (envBase && localBackend)) {
       setApiKey(envKey || 'backend-configured')
     } else {
       getSetting('openai-api-key').then((k) => { if (k) setApiKey(k) })
     }
     getSetting('theme').then((t) => { if (t === 'light') setLightTheme(true) })
     getSetting('font-size').then((f) => { if (f === 's' || f === 'l') setFontSize(f) })
+    getSetting('sidebar-width').then((value) => {
+      const width = Number(value)
+      if (Number.isFinite(width) && width >= 220 && width <= 600) setSidebarWidth(width)
+    })
     getSetting('ai-agent-mode').then((v) => { if (v === 'on') setAgentMode(true) })
     getSetting('ai-speak').then((v) => { if (v === 'on') setSpeakReplies(true) })
+    getSetting('ai-model').then((model) => { if (model) setAiModel(model) })
   }, [])
 
   // Firebase auth + realtime sync
@@ -411,6 +427,11 @@ function App() {
 
   const selectNote = (note: Note) => {
     save()
+    const lastOpenedAt = new Date().toISOString()
+    const openedNote = { ...note, lastOpenedAt }
+    setNotes((prev) => prev.map((item) => item.id === note.id ? openedNote : item))
+    putNote(openedNote)
+    setOpenTabs((tabs) => [note.id, ...tabs.filter((id) => id !== note.id)])
     setActiveId(note.id)
     setTitle(note.title)
     setBody(note.body)
@@ -457,6 +478,34 @@ function App() {
     setMobileView('list')
   }
 
+  const toggleSidebar = () => setSidebarOpen((s) => !s)
+
+  const startSidebarResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    // On phones the sidebar fills the screen, so there is nothing useful to resize.
+    if (window.innerWidth <= 640) return
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidth = sidebarWidth
+    setResizingSidebar(true)
+
+    const onMove = (moveEvent: PointerEvent) => {
+      // Keep enough editor space available while allowing a comfortably wide sidebar.
+      const maxWidth = Math.min(600, Math.max(280, window.innerWidth - 320))
+      setSidebarWidth(Math.min(maxWidth, Math.max(220, startWidth + moveEvent.clientX - startX)))
+    }
+    const onUp = () => {
+      setResizingSidebar(false)
+      document.removeEventListener('pointermove', onMove)
+      document.removeEventListener('pointerup', onUp)
+      document.removeEventListener('pointercancel', onUp)
+      // Persist the final size, rather than writing on every pointer movement.
+      setSidebarWidth((width) => { putSetting('sidebar-width', String(width)); return width })
+    }
+    document.addEventListener('pointermove', onMove)
+    document.addEventListener('pointerup', onUp)
+    document.addEventListener('pointercancel', onUp)
+  }
+
   // Close the open note: save it, then return to the note list / empty state
   const closeNote = () => {
     save()
@@ -465,6 +514,15 @@ function App() {
     setBody('')
     setPreview(false)
     setMobileView('list')
+  }
+
+  const closeTab = (id: number) => {
+    const remaining = openTabs.filter((tabId) => tabId !== id)
+    setOpenTabs(remaining)
+    if (activeId !== id) return
+    const next = remaining.map((tabId) => notesRef.current.find((note) => note.id === tabId)).find((note): note is Note => Boolean(note))
+    if (next) selectNote(next)
+    else closeNote()
   }
 
   // Escape closes things in priority order: help modal → AI chat → open note
@@ -723,7 +781,7 @@ ${renderMarkdown(noteBody)}
     try {
       const { suggestTags } = await import('./ai')
       const titles = notesRef.current.filter((n) => !n.deletedAt && n.id !== activeId).map((n) => n.title)
-      const line = await suggestTags(apiKey, { ...activeNote, body }, titles)
+      const line = await suggestTags(apiKey, { ...activeNote, body }, titles, aiModel)
       if (line) setBody((prev) => `${prev.trimEnd()}\n\n${line}\n`)
     } catch (err) {
       window.alert(`Auto-tag failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -838,6 +896,10 @@ ${renderMarkdown(noteBody)}
     return [...searched].sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false) || b.id - a.id)
   }, [liveNotes, q])
   const rootNotes = useMemo(() => visibleNotes.filter((n) => n.folderId === null), [visibleNotes])
+  const tabNotes = useMemo(() => {
+    const byId = new Map(liveNotes.map((note) => [note.id, note]))
+    return openTabs.map((id) => byId.get(id)).filter((note): note is Note => Boolean(note))
+  }, [liveNotes, openTabs])
 
   // Backlinks: live notes whose body wikilinks to the open note's title
   const backlinks = useMemo(() => {
@@ -952,11 +1014,54 @@ ${renderMarkdown(noteBody)}
     setKeyInput('')
   }
 
+  const analyzeGraph = () => {
+    setChatOpen(true)
+    if (!apiKey || !aiModel.trim() || aiBusy) return
+    const prompt = 'Analyze the current vault graph'
+    const userMsg: ChatMessage = {
+      id: Date.now(), role: 'user', content: prompt, createdAt: new Date().toISOString(),
+      sessionId: chatSessionRef.current,
+    }
+    setChatMessages((prev) => [...prev, userMsg])
+    putChatMessage(userMsg)
+    setAiBusy(true)
+    setAgentActivity([])
+    void import('./ai').then(async ({ runGraphAnalysis }) => {
+      try {
+        const reply = await runGraphAnalysis(apiKey, notesRef.current.filter((note) => !note.deletedAt), aiModel,
+          (activity) => setAgentActivity((prev) => [...prev, activity]))
+        const aiMsg: ChatMessage = {
+          id: Date.now() + 1, role: 'assistant', content: reply, createdAt: new Date().toISOString(),
+          sessionId: chatSessionRef.current,
+        }
+        setChatMessages((prev) => [...prev, aiMsg])
+        putChatMessage(aiMsg)
+        if (speakRef.current) speakText(reply)
+      } catch (err) {
+        const aiMsg: ChatMessage = {
+          id: Date.now() + 1, role: 'assistant', content: `Graph analysis failed: ${err instanceof Error ? err.message : String(err)}`,
+          createdAt: new Date().toISOString(), sessionId: chatSessionRef.current,
+        }
+        setChatMessages((prev) => [...prev, aiMsg])
+        putChatMessage(aiMsg)
+      } finally {
+        setAiBusy(false)
+        setAgentActivity([])
+      }
+    })
+  }
+
   const toggleAgentMode = () => {
     setAgentMode((prev) => {
       putSetting('ai-agent-mode', prev ? 'off' : 'on')
       return !prev
     })
+  }
+
+  const changeAIModel = (model: string) => {
+    const next = model.trim()
+    setAiModel(next)
+    putSetting('ai-model', next)
   }
 
   // Human-in-the-loop gate: resolves when the user approves/rejects in the chat UI
@@ -1061,7 +1166,7 @@ ${renderMarkdown(noteBody)}
 
   const sendChat = async (preset?: string) => {
     const text = (preset ?? chatInput).trim()
-    if (!text || aiBusy || !apiKey) return
+    if (!text || aiBusy || !apiKey || !aiModel.trim()) return
     setChatInput('')
     const userMsg: ChatMessage = {
       id: Date.now(), role: 'user', content: text, createdAt: new Date().toISOString(),
@@ -1078,6 +1183,7 @@ ${renderMarkdown(noteBody)}
         requestApproval,
         setStreamText,
         (activity) => setAgentActivity((prev) => [...prev, activity]),
+        aiModel,
       )
       const aiMsg: ChatMessage = {
         id: Date.now() + 1, role: 'assistant', content: reply, createdAt: new Date().toISOString(),
@@ -1233,16 +1339,20 @@ ${renderMarkdown(noteBody)}
   return (
     <div className={`app ${lightTheme ? 'light' : ''} font-${fontSize}`}>
       {/* Sidebar */}
-      <aside className={`sidebar ${mobileView === 'list' ? 'mobile-show' : 'mobile-hide'}`}>
+      <aside
+        className={`sidebar ${mobileView === 'list' ? 'mobile-show' : 'mobile-hide'} ${sidebarOpen ? '' : 'collapsed'}`}
+        style={{ '--sidebar-width': `${sidebarWidth}px` } as React.CSSProperties}
+      >
         <div className="sidebar-header">
           <div className="sidebar-title">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
               <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
             </svg>
-            <span>My Notes</span>
+            <span>{notesOwner} Notes</span>
             {syncing && <span className="sync-badge">syncing&hellip;</span>}
           </div>
+          <button className="sidebar-close" onClick={() => setSidebarOpen(false)} title="Close sidebar" aria-label="Close sidebar">×</button>
         </div>
         <div className="sidebar-actions">
           <button className="new-page-btn" onClick={() => addNote()}>
@@ -1513,12 +1623,44 @@ ${renderMarkdown(noteBody)}
           )}
         </div>
       </aside>
+      {sidebarOpen && <div
+        className={`sidebar-resizer ${resizingSidebar ? 'is-resizing' : ''}`}
+        onPointerDown={startSidebarResize}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        title="Drag to resize sidebar"
+      />}
 
       {/* Editor */}
       <main className={`editor ${mobileView === 'editor' ? 'mobile-show' : 'mobile-hide'}`}>
+        {/* Top tabs (desktop) - show notes as horizontal tabs in the top half */}
+        <div className="top-tabs">
+          <div className="tabs-list">
+            {tabNotes.map((n) => (
+              <button
+                key={n.id}
+                className={`tab-item ${n.id === activeId ? 'active' : ''}`}
+                onClick={() => selectNote(n)}
+                title={n.title}
+              >
+                <span className="tab-title">{n.title || 'Untitled'}</span>
+                <span
+                  className="tab-close"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Close ${n.title || 'Untitled'} tab`}
+                  onClick={(event) => { event.stopPropagation(); closeTab(n.id) }}
+                  onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); closeTab(n.id) } }}
+                >×</span>
+              </button>
+            ))}
+          </div>
+        </div>
         {showGraph ? (
           <>
             <div className="editor-topbar">
+              <button className="sidebar-toggle" onClick={toggleSidebar} title="Toggle sidebar">☰</button>
               <button className="back-btn" onClick={() => { setShowGraph(false); setMobileView('list') }}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="15 18 9 12 15 6" />
@@ -1526,12 +1668,16 @@ ${renderMarkdown(noteBody)}
                 Notes
               </button>
               <span className="graph-title">Graph &middot; {notes.length} notes</span>
+              <button className="graph-analyze-btn" onClick={analyzeGraph} disabled={!apiKey || aiBusy} title="Ask the configured AI to analyze this graph">
+                ✦ Analyze graph
+              </button>
             </div>
             <GraphView notes={liveNotes} folders={folders} activeId={activeId} onOpenNote={openNoteById} />
           </>
         ) : activeNote ? (
           <>
             <div className="editor-topbar">
+              <button className="sidebar-toggle" onClick={toggleSidebar} title="Toggle sidebar">☰</button>
               <button className="back-btn" onClick={goBack}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="15 18 9 12 15 6" />
@@ -1650,6 +1796,7 @@ ${renderMarkdown(noteBody)}
           </>
         ) : (
           <div className="editor-empty">
+            {!sidebarOpen && <button className="sidebar-toggle empty-sidebar-toggle" onClick={toggleSidebar} title="Open sidebar" aria-label="Open sidebar">☰</button>}
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#334155" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
               <polyline points="14 2 14 8 20 8" />
@@ -1695,16 +1842,35 @@ ${renderMarkdown(noteBody)}
             </div>
             <span className="ai-mode-hint">{agentMode ? 'edits auto-apply' : 'you approve each edit'}</span>
           </div>
+          <div className="ai-model-row">
+            <label htmlFor="ai-model-select">Model</label>
+            <select
+              id="ai-model-select"
+              value={aiModel === 'stealth/ox-alpha' ? 'stealth/ox-alpha' : 'custom'}
+              onChange={(event) => changeAIModel(event.target.value === 'stealth/ox-alpha' ? 'stealth/ox-alpha' : '')}
+              title="Choose the AI model used for this chat"
+            >
+              <option value="stealth/ox-alpha">Ox Alpha</option>
+              <option value="custom">Custom OpenRouter model</option>
+            </select>
+            <input
+              className="ai-model-input"
+              value={aiModel}
+              onChange={(event) => changeAIModel(event.target.value)}
+              placeholder="provider/model-name"
+              aria-label="OpenRouter model ID"
+            />
+          </div>
           {!apiKey ? (
             <div className="ai-key-setup">
-              <p>Enter your OpenAI API key to enable the assistant. It's stored locally on this device only.</p>
+              <p>Enter your OpenRouter API key to use Ox Alpha. It is stored only on this device; do not commit keys to <code>.env</code>.</p>
               <input
                 type="password"
                 className="search-input"
                 value={keyInput}
                 onChange={(e) => setKeyInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && saveApiKey()}
-                placeholder="sk-..."
+                placeholder="sk-or-..."
               />
               <button className="ai-send-btn" onClick={saveApiKey}>Save key</button>
             </div>

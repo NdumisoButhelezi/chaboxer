@@ -14,7 +14,9 @@
     "@capacitor/cli": "^8.3.0",
     "@capacitor/core": "^8.3.0",
     "@langchain/core": "^1.2.6",
+    "@langchain/langgraph": "^1.4.13",
     "@langchain/openai": "^1.5.7",
+    "animejs": "^4.5.0",
     "firebase": "^12.17.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"

@@ -44,6 +44,7 @@ export interface Note {
   folderId: number | null
   createdAt: string // ISO timestamp
   updatedAt: string // ISO timestamp
+  lastOpenedAt?: string // ISO timestamp; used to keep recently opened notes first
   pinned?: boolean
   deletedAt?: string | null // set = in trash
 }
