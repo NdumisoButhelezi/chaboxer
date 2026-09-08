@@ -18,6 +18,18 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 const DEFAULT_AI_MODEL = (import.meta.env.VITE_OPENAI_MODEL as string | undefined) || 'stealth/ox-alpha'
+const ENV_BASE_URL = (import.meta.env.VITE_OPENAI_BASE_URL as string | undefined) || ''
+const ENV_API_KEY = (import.meta.env.VITE_OPENAI_API_KEY as string | undefined) || ''
+
+// Mirrors ai.ts's PROVIDER_PRESETS — kept local so this file doesn't eagerly
+// pull in the (dynamically-imported) AI module just to read this table.
+const AI_PROVIDERS = {
+  openrouter: { label: 'OpenRouter (Ox Alpha)', baseURL: 'https://openrouter.ai/api/v1', defaultModel: 'stealth/ox-alpha', keyHint: 'sk-or-...' },
+  openai: { label: 'OpenAI', baseURL: '', defaultModel: 'gpt-4o-mini', keyHint: 'sk-...' },
+  custom: { label: 'Custom endpoint', baseURL: '', defaultModel: '', keyHint: 'API key (if required)' },
+} as const
+type AIProvider = keyof typeof AI_PROVIDERS
+
 
 // Simple LCS line diff for the AI approval card
 function lineDiff(oldText: string, newText: string): { type: ' ' | '+' | '-'; line: string }[] {
@@ -116,6 +128,8 @@ function App() {
   const [apiKey, setApiKey] = useState('')
   const [keyInput, setKeyInput] = useState('')
   const [aiModel, setAiModel] = useState(DEFAULT_AI_MODEL)
+  const [aiProvider, setAiProvider] = useState<AIProvider>('openrouter')
+  const [aiBaseUrl, setAiBaseUrl] = useState('')
   const chatEndRef = useRef<HTMLDivElement>(null)
   const notesRef = useRef<Note[]>([])
   const foldersRef = useRef<Folder[]>([])
@@ -278,6 +292,11 @@ function App() {
     getSetting('ai-agent-mode').then((v) => { if (v === 'on') setAgentMode(true) })
     getSetting('ai-speak').then((v) => { if (v === 'on') setSpeakReplies(true) })
     getSetting('ai-model').then((model) => { if (model) setAiModel(model) })
+    // Provider/base URL are only user-editable when no env override is set
+    if (!envBase) {
+      getSetting('ai-provider').then((p) => { if (p === 'openrouter' || p === 'openai' || p === 'custom') setAiProvider(p) })
+      getSetting('ai-base-url').then((u) => { if (u) setAiBaseUrl(u) })
+    }
   }, [])
 
   // Firebase auth + realtime sync
@@ -781,7 +800,7 @@ ${renderMarkdown(noteBody)}
     try {
       const { suggestTags } = await import('./ai')
       const titles = notesRef.current.filter((n) => !n.deletedAt && n.id !== activeId).map((n) => n.title)
-      const line = await suggestTags(apiKey, { ...activeNote, body }, titles, aiModel)
+      const line = await suggestTags(apiKey, { ...activeNote, body }, titles, aiModel, aiBaseUrl)
       if (line) setBody((prev) => `${prev.trimEnd()}\n\n${line}\n`)
     } catch (err) {
       window.alert(`Auto-tag failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -1029,7 +1048,7 @@ ${renderMarkdown(noteBody)}
     void import('./ai').then(async ({ runGraphAnalysis }) => {
       try {
         const reply = await runGraphAnalysis(apiKey, notesRef.current.filter((note) => !note.deletedAt), aiModel,
-          (activity) => setAgentActivity((prev) => [...prev, activity]))
+          (activity) => setAgentActivity((prev) => [...prev, activity]), aiBaseUrl)
         const aiMsg: ChatMessage = {
           id: Date.now() + 1, role: 'assistant', content: reply, createdAt: new Date().toISOString(),
           sessionId: chatSessionRef.current,
@@ -1062,6 +1081,24 @@ ${renderMarkdown(noteBody)}
     const next = model.trim()
     setAiModel(next)
     putSetting('ai-model', next)
+  }
+
+  const changeAIBaseUrl = (url: string) => {
+    const next = url.trim()
+    setAiBaseUrl(next)
+    putSetting('ai-base-url', next)
+  }
+
+  // Switching provider swaps in its base URL + default model; "custom" leaves
+  // both as free text for any OpenAI-compatible endpoint (Azure, Ollama...).
+  const changeAIProvider = (provider: AIProvider) => {
+    setAiProvider(provider)
+    putSetting('ai-provider', provider)
+    if (provider !== 'custom') {
+      const preset = AI_PROVIDERS[provider]
+      changeAIBaseUrl(preset.baseURL)
+      changeAIModel(preset.defaultModel)
+    }
   }
 
   // Human-in-the-loop gate: resolves when the user approves/rejects in the chat UI
@@ -1184,6 +1221,7 @@ ${renderMarkdown(noteBody)}
         setStreamText,
         (activity) => setAgentActivity((prev) => [...prev, activity]),
         aiModel,
+        aiBaseUrl,
       )
       const aiMsg: ChatMessage = {
         id: Date.now() + 1, role: 'assistant', content: reply, createdAt: new Date().toISOString(),
@@ -1842,35 +1880,76 @@ ${renderMarkdown(noteBody)}
             </div>
             <span className="ai-mode-hint">{agentMode ? 'edits auto-apply' : 'you approve each edit'}</span>
           </div>
+          <div className="ai-env-info">
+            {ENV_BASE_URL || ENV_API_KEY ? (
+              <p>
+                Backend fixed by <code>.env</code>{ENV_BASE_URL ? <> — base URL <code>{ENV_BASE_URL}</code></> : ' — default OpenAI endpoint'}
+                {ENV_API_KEY ? ', API key set' : ''}. Edit <code>.env</code> and rebuild to change it.
+              </p>
+            ) : (
+              <p>No <code>.env</code> override found — pick a provider below, or set <code>VITE_OPENAI_BASE_URL</code> in <code>.env</code> to fix it for all users.</p>
+            )}
+          </div>
+          <div className="ai-model-row">
+            <label htmlFor="ai-provider-select">Provider</label>
+            <select
+              id="ai-provider-select"
+              value={aiProvider}
+              disabled={!!ENV_BASE_URL}
+              onChange={(event) => changeAIProvider(event.target.value as AIProvider)}
+              title={ENV_BASE_URL ? 'Backend is fixed by VITE_OPENAI_BASE_URL in .env' : 'Choose which AI backend to use'}
+            >
+              {(Object.keys(AI_PROVIDERS) as AIProvider[]).map((key) => (
+                <option key={key} value={key}>{AI_PROVIDERS[key].label}</option>
+              ))}
+            </select>
+          </div>
+          {aiProvider === 'custom' && !ENV_BASE_URL && (
+            <div className="ai-model-row">
+              <label htmlFor="ai-base-url-input">Base URL</label>
+              <input
+                id="ai-base-url-input"
+                className="ai-model-input"
+                value={aiBaseUrl}
+                onChange={(event) => changeAIBaseUrl(event.target.value)}
+                placeholder="https://api.example.com/v1"
+                aria-label="Custom OpenAI-compatible base URL"
+              />
+            </div>
+          )}
           <div className="ai-model-row">
             <label htmlFor="ai-model-select">Model</label>
-            <select
-              id="ai-model-select"
-              value={aiModel === 'stealth/ox-alpha' ? 'stealth/ox-alpha' : 'custom'}
-              onChange={(event) => changeAIModel(event.target.value === 'stealth/ox-alpha' ? 'stealth/ox-alpha' : '')}
-              title="Choose the AI model used for this chat"
-            >
-              <option value="stealth/ox-alpha">Ox Alpha</option>
-              <option value="custom">Custom OpenRouter model</option>
-            </select>
+            {!ENV_BASE_URL && (
+              <select
+                id="ai-model-select"
+                value={aiModel === AI_PROVIDERS[aiProvider].defaultModel ? aiModel : 'custom'}
+                onChange={(event) => changeAIModel(event.target.value === 'custom' ? '' : event.target.value)}
+                title="Choose the AI model used for this chat"
+              >
+                {AI_PROVIDERS[aiProvider].defaultModel && (
+                  <option value={AI_PROVIDERS[aiProvider].defaultModel}>{AI_PROVIDERS[aiProvider].defaultModel}</option>
+                )}
+                <option value="custom">Custom model</option>
+              </select>
+            )}
             <input
               className="ai-model-input"
               value={aiModel}
               onChange={(event) => changeAIModel(event.target.value)}
-              placeholder="provider/model-name"
-              aria-label="OpenRouter model ID"
+              placeholder="model name"
+              aria-label="Model ID"
             />
           </div>
           {!apiKey ? (
             <div className="ai-key-setup">
-              <p>Enter your OpenRouter API key to use Ox Alpha. It is stored only on this device; do not commit keys to <code>.env</code>.</p>
+              <p>Enter your {AI_PROVIDERS[aiProvider].label} API key to chat. It is stored only on this device; do not commit keys to <code>.env</code>.</p>
               <input
                 type="password"
                 className="search-input"
                 value={keyInput}
                 onChange={(e) => setKeyInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && saveApiKey()}
-                placeholder="sk-or-..."
+                placeholder={AI_PROVIDERS[aiProvider].keyHint}
               />
               <button className="ai-send-btn" onClick={saveApiKey}>Save key</button>
             </div>

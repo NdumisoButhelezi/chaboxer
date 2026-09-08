@@ -28,29 +28,40 @@ export interface PendingAction {
 export interface ApprovalDecision { ok: boolean; content?: string }
 export type ApprovalGate = (action: PendingAction) => Promise<ApprovalDecision>
 
-// LLM backend config — env wins over the key passed from the UI.
+// LLM backend config — env wins over the key/provider passed from the UI.
 // Base URL lets you target any OpenAI-compatible server (Azure, Ollama, vLLM, OpenRouter...).
 export const envApiKey = (import.meta.env.VITE_OPENAI_API_KEY as string | undefined) || ''
 export const defaultAIModel = (import.meta.env.VITE_OPENAI_MODEL as string | undefined) || 'stealth/ox-alpha'
-const envBaseURL = (import.meta.env.VITE_OPENAI_BASE_URL as string | undefined) || undefined
-const envEmbedModel = (import.meta.env.VITE_OPENAI_EMBED_MODEL as string | undefined) || 'text-embedding-3-small'
+export const envBaseURL = (import.meta.env.VITE_OPENAI_BASE_URL as string | undefined) || undefined
+export const envEmbedModel = (import.meta.env.VITE_OPENAI_EMBED_MODEL as string | undefined) || 'text-embedding-3-small'
 // Cheap model for lightweight jobs (tagging); falls back to the main model
-const envTagModel = (import.meta.env.VITE_OPENAI_TAG_MODEL as string | undefined) || ''
+export const envTagModel = (import.meta.env.VITE_OPENAI_TAG_MODEL as string | undefined) || ''
 
-export function createLLM(apiKey: string, model = defaultAIModel) {
+// Provider presets shown in the UI when no env override is set — pick one and
+// the base URL + a sane default model come along with it.
+export const PROVIDER_PRESETS = {
+  openrouter: { label: 'OpenRouter', baseURL: 'https://openrouter.ai/api/v1', defaultModel: 'stealth/ox-alpha' },
+  openai: { label: 'OpenAI', baseURL: undefined, defaultModel: 'gpt-4o-mini' },
+  custom: { label: 'Custom endpoint', baseURL: '', defaultModel: '' },
+} as const satisfies Record<string, { label: string; baseURL: string | undefined; defaultModel: string }>
+export type AIProvider = keyof typeof PROVIDER_PRESETS
+
+export function createLLM(apiKey: string, model = defaultAIModel, baseURL?: string) {
+  const url = envBaseURL || baseURL
   return new ChatOpenAI({
     apiKey: envApiKey || apiKey || 'not-needed', // local backends often ignore the key
     model,
     temperature: 0.4,
-    ...(envBaseURL ? { configuration: { baseURL: envBaseURL } } : {}),
+    ...(url ? { configuration: { baseURL: url } } : {}),
   })
 }
 
-function createEmbedder(apiKey: string) {
+function createEmbedder(apiKey: string, baseURL?: string) {
+  const url = envBaseURL || baseURL
   return new OpenAIEmbeddings({
     apiKey: envApiKey || apiKey || 'not-needed',
     model: envEmbedModel,
-    ...(envBaseURL ? { configuration: { baseURL: envBaseURL } } : {}),
+    ...(url ? { configuration: { baseURL: url } } : {}),
   })
 }
 
@@ -68,9 +79,10 @@ export async function retrieveRelevantNotes(
   query: string,
   notes: Note[],
   k = 6,
+  baseURL?: string,
 ): Promise<Note[]> {
   if (notes.length === 0) return []
-  const embedder = createEmbedder(apiKey)
+  const embedder = createEmbedder(apiKey, baseURL)
   const cache = new Map((await getAllEmbeddings()).map((e) => [e.id, e]))
 
   const stale = notes.filter((n) => cache.get(n.id)?.updatedAt !== n.updatedAt)
@@ -361,6 +373,7 @@ export async function runGraphAnalysis(
   notes: Note[],
   model = defaultAIModel,
   onProgress?: (activity: string) => void,
+  baseURL?: string,
 ): Promise<string> {
   const workflow = new StateGraph(GraphAnalysisState)
     .addNode('map_graph', () => {
@@ -369,7 +382,7 @@ export async function runGraphAnalysis(
     })
     .addNode('reason_about_graph', async (state) => {
       onProgress?.('Ox Alpha is analyzing the graph')
-      const response = await createLLM(apiKey, model).invoke([
+      const response = await createLLM(apiKey, model, baseURL).invoke([
         new SystemMessage('You are a knowledge-graph analyst for a markdown vault. Use only the supplied graph snapshot. Give a concise, useful report with: clusters, hubs, isolated notes, unresolved links, and 2–5 highest-value improvements. Reference notes only with the [[id|Title]] syntax present in the snapshot. Do not claim to have changed notes.'),
         new HumanMessage(state.snapshot),
       ])
@@ -390,8 +403,9 @@ export async function suggestTags(
   note: Note,
   allTitles: string[],
   selectedModel = defaultAIModel,
+  baseURL?: string,
 ): Promise<string> {
-  const model = createLLM(apiKey, envTagModel || selectedModel)
+  const model = createLLM(apiKey, envTagModel || selectedModel, baseURL)
   const res = await model.invoke([
     new SystemMessage(
       `You tag markdown notes. Reply with ONE line only: 2-5 relevant #tags (lowercase, hyphenated) and, if any of these existing note titles are strongly related, [[wikilinks]] to them: ${allTitles.join(', ')}. No explanations.`
@@ -412,8 +426,9 @@ export async function runAI(
   onToken?: (text: string) => void, // streaming: called with the answer-so-far
   onProgress?: (activity: string) => void, // live tool activity for the UI
   selectedModel = defaultAIModel,
+  baseURL?: string,
 ): Promise<string> {
-  const model = createLLM(apiKey, selectedModel).bindTools(TOOLS)
+  const model = createLLM(apiKey, selectedModel, baseURL).bindTools(TOOLS)
 
   const preferences = (await getSetting('ai-preferences').catch(() => '')) || ''
 
@@ -421,7 +436,7 @@ export async function runAI(
   // (e.g. local backends without an embeddings endpoint)
   let retrieved: Note[] = []
   try {
-    retrieved = await retrieveRelevantNotes(apiKey, userInput, notes)
+    retrieved = await retrieveRelevantNotes(apiKey, userInput, notes, 6, baseURL)
   } catch {
     retrieved = []
   }
@@ -540,7 +555,7 @@ export async function runAI(
             break
           }
           case 'search_notes': {
-            const found = await retrieveRelevantNotes(apiKey, String(args.query ?? ''), notes, 5)
+            const found = await retrieveRelevantNotes(apiKey, String(args.query ?? ''), notes, 5, baseURL)
             result = found.length
               ? found.map((n) => `id:${n.id} "${n.title}"\n${n.body.replace(/\s+/g, ' ').slice(0, 300)}`).join('\n---\n')
               : 'no matching notes'
